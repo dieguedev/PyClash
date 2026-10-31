@@ -1,0 +1,10 @@
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+build/
+dist/
+# Capturas sin anonimizar: nunca se versionan
+captures_raw/
+config.local.*
+secrets.*
