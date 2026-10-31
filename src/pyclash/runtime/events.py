@@ -35,6 +35,14 @@ class ImprovementStarted(Event):
 
 
 @dataclass(frozen=True)
+class UpgradePlanned(Event):
+    """Dry run: lo que se habría empezado y por qué. No se ha tocado nada."""
+
+    name: str
+    reason: str
+
+
+@dataclass(frozen=True)
 class LootObtained(Event):
     resources: dict[str, int]
 

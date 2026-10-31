@@ -133,18 +133,26 @@ def _ranked(rows: Sequence[PanelRow], order: Order) -> list[PanelRow]:
     return sorted(rows, key=lambda r: (r.resource != "dark_elixir", sign * (r.cost or 0)))
 
 
+def builder_gate(state: UpgradeState, settings: UpgradeSettings) -> str | None:
+    """Motivo por el que no se puede empezar nada aunque haya filas (constructores, reserva, tope), o None."""
+    if state.free_builders is None:
+        return "constructores libres desconocidos"
+    if state.free_builders <= settings.reserve_builders:
+        return f"{state.free_builders} constructores libres, reserva {settings.reserve_builders}"
+    if settings.cap_per_cycle is not None and state.started_this_cycle >= settings.cap_per_cycle:
+        return f"tope por ciclo alcanzado ({settings.cap_per_cycle})"
+    return None
+
+
 def decide_upgrade(state: UpgradeState, settings: UpgradeSettings, rng: random.Random) -> Decision:
     dry = settings.mode is Mode.DRY_RUN
 
     def none(reason: str, rejected: Iterable[Rejection] = ()) -> Decision:
         return Decision(None, reason, tuple(rejected), dry_run=dry)
 
-    if state.free_builders is None:
-        return none("constructores libres desconocidos")
-    if state.free_builders <= settings.reserve_builders:
-        return none(f"{state.free_builders} constructores libres, reserva {settings.reserve_builders}")
-    if settings.cap_per_cycle is not None and state.started_this_cycle >= settings.cap_per_cycle:
-        return none(f"tope por ciclo alcanzado ({settings.cap_per_cycle})")
+    blocked = builder_gate(state, settings)
+    if blocked:
+        return none(blocked)
 
     rejected: list[Rejection] = []
     eligible: list[PanelRow] = []
