@@ -47,6 +47,7 @@ def test_bad_region_rejected(tmp_path):
 
 def test_check_fixtures_fails_on_unmarked_image():
     raw = ROOT / "tests" / "fixtures" / "_unmarked_tmp.png"
+    raw.parent.mkdir(exist_ok=True)
     _make(raw)
     try:
         r = subprocess.run([sys.executable, str(ROOT / "tools" / "check_fixtures.py")], capture_output=True, text=True, stdin=subprocess.DEVNULL)
@@ -59,6 +60,7 @@ def test_check_fixtures_fails_on_unmarked_image():
 def test_check_fixtures_passes_on_marked_image():
     ok = ROOT / "tests" / "fixtures" / "_marked_tmp.png"
     src = ROOT / "tests" / "fixtures" / "_src_tmp.png"
+    src.parent.mkdir(exist_ok=True)
     _make(src)
     try:
         anonymize(src, ok, [(0, 0, 4, 4)])
