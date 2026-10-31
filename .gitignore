@@ -8,3 +8,4 @@ dist/
 captures_raw/
 config.local.*
 secrets.*
+CLAUDE.md

@@ -134,14 +134,16 @@ class DigitReader:
         size: int,
         color: str | RGB = "white",
         region: Rect | None = None,
+        alphabet: str = DIGITS,
     ) -> Reading[str] | None:
-        """Cadena de dígitos de la región; `confidence` es la del peor glifo. None si no hay ninguno."""
+        """Cadena de glifos de `alphabet` (por defecto 0–9) de la región; `confidence` es la del
+        peor glifo. None si no hay ninguno. Añadir «/» sirve para leer fracciones como «2/5»."""
         rgb = TEXT_COLORS[color] if isinstance(color, str) else color
         section, eff = crop(image, region)
         if section.size == 0:
             return None
         candidates: list[Match] = []
-        for d in DIGITS:
+        for d in alphabet:
             candidates += self.matcher.find_all(
                 section, render_text(d, size, rgb), None, self.threshold,
                 prefilter_color=rgb, max_overlap=0.3, label=d,
