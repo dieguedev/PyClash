@@ -7,14 +7,18 @@ name = "pyclash"
 version = "0.1.0"
 description = "Automatización de Clash of Clans sobre Google Play Games"
 requires-python = ">=3.11"
-dependencies = ["Pillow", "numpy"]
+dependencies = ["Pillow", "numpy", "opencv-python-headless", "rapidfuzz"]
 
 [project.optional-dependencies]
 dev = ["pytest"]
 ui = ["PySide6"]
+ocr = ["easyocr"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+pyclash = ["data/*.json", "assets/fonts/*.ttf"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
