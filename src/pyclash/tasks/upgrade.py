@@ -27,23 +27,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
-from PIL import Image
-
 from ..device.base import Frame
 from ..policy.upgrades import Decision, Mode, UpgradeSettings, UpgradeState, builder_gate, decide_upgrade
 from ..runtime.context import Context
-from ..runtime.events import CaptureSaved, ImprovementStarted, UpgradePlanned, Warning
+from ..runtime.events import ImprovementStarted, UpgradePlanned, Warning
 from ..screens.classifier import Screen, ScreenClassifier, TextIndicator
 from ..screens.signatures import box
 from ..screens.upgrade_dialog import GEMS, DialogReader, usable_confirm
-from ..screens.panel_layout import PANEL_PROFILES
-from ..screens.upgrade_panel import PanelReader, PanelRow, PanelScanner
+from ..screens.upgrade_panel import PanelRow, PanelScanner
 from ..screens.village import VillageReader
 from .base import Outcome, TaskResult
-from .recovery import RecoverScreen, RecoveryConfig
+from .panel import ENGLISH_HINT, PanelTask
+from .recovery import RecoveryConfig
 
-ENGLISH_HINT = " (el bot exige el juego en inglés)"
 _RESOURCE_INDEX = {"gold": 0, "elixir": 1, "dark_elixir": 2}
 
 
@@ -86,7 +82,7 @@ class _Attempt:
     rebuild: bool = False
 
 
-class UpgradeTask:
+class UpgradeTask(PanelTask):
     name = "upgrade_village"
 
     def __init__(
@@ -97,13 +93,8 @@ class UpgradeTask:
         dialogs: DialogReader | None = None,
         village: VillageReader | None = None,
     ) -> None:
-        self.config = config or UpgradeConfig()
-        self.classifier = classifier or ScreenClassifier()
-        menu = self.config.menu
-        reader = PanelReader(PANEL_PROFILES[menu.panel], **({"categories": menu.categories} if menu.categories else {}))
-        self.scanner = scanner or PanelScanner(reader)
+        self._setup_panel(config or UpgradeConfig(), classifier, scanner, village)
         self.dialogs = dialogs or DialogReader()
-        self.village = village or VillageReader()
 
     # ------------------------------------------------------------------------------ recorrido
 
@@ -158,35 +149,6 @@ class UpgradeTask:
         return TaskResult.nothing_to_do(last_reason)
 
     # ------------------------------------------------------------------------------ pasos
-
-    def _to_village(self, ctx: Context) -> TaskResult | None:
-        """None si ya se está (o se vuelve a) la aldea; si no, el resultado de la recuperación."""
-        result = RecoverScreen(self.classifier, self.config.recovery).run(ctx)
-        return None if result.outcome in (Outcome.DONE, Outcome.NOTHING_TO_DO) else result
-
-    def _close(self, ctx: Context) -> TaskResult | None:
-        return self._to_village(ctx)
-
-    def _open_and_scan(self, ctx: Context) -> list[PanelRow] | TaskResult:
-        menu = self.config.menu
-        frame = ctx.device.capture()
-        button = menu.open_button.best(frame.image, self.classifier.finder)
-        if button is None or button.confidence < menu.open_button.threshold:
-            return TaskResult.needs_recovery(f"no se ve el botón «{menu.open_button.text}» para abrir el menú{ENGLISH_HINT}")
-        ctx.device.tap(*button.center)
-
-        def opened() -> bool:
-            return self.classifier.classify(ctx.device.capture().image).screen is menu.screen
-
-        if not ctx.wait_until(opened, self.config.open_timeout_s, 0.5):
-            return TaskResult.needs_recovery(f"el menú «{menu.name}» no se abrió")
-        return list(self.scanner.scan(ctx).rows)
-
-    def _cooling(self, ctx: Context, rows: list[PanelRow]) -> frozenset[str]:
-        return frozenset(r.name for r in rows if r.name and not ctx.cooldowns.ready(self._key(r.name)))
-
-    def _key(self, name: str) -> str:
-        return f"upgrade:{self.config.menu.name}:{name}"
 
     def _attempt(
         self, ctx: Context, decision: Decision, free_before: int | None, resources: tuple | None
@@ -253,19 +215,7 @@ class UpgradeTask:
         return _Attempt("skipped", reason)
 
     def _skip(self, ctx: Context, row: PanelRow, reason: str, frame: Frame) -> None:
-        if row.name:
-            ctx.cooldowns.start(self._key(row.name), self.config.cooldown_s)
-        path = self._save(ctx, frame.image)
-        if path is not None:
-            ctx.events.publish(CaptureSaved(str(path)))
-
-    def _save(self, ctx: Context, image: np.ndarray) -> Path | None:
-        if self.config.capture_dir is None:
-            return None
-        self.config.capture_dir.mkdir(parents=True, exist_ok=True)
-        path = self.config.capture_dir / f"upgrade-{int(ctx.clock.now() * 1000)}.png"
-        Image.fromarray(image).save(path)
-        return path
+        self._set_aside(ctx, row.name, frame.image)
 
     def _verified(
         self, ctx: Context, row: PanelRow, rebuild: bool, free_before: int | None, resources: tuple | None
