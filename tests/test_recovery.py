@@ -83,6 +83,40 @@ def test_unknown_dialog_with_close_button_taps_the_x_and_reclassifies():
     assert find_close_buttons(fixture_frame("unknown_filter_menu").image)[0].rect.contains(*first)
 
 
+def test_an_unknown_dialog_closed_with_the_x_leaves_a_capture_and_a_warning_before_the_tap(tmp_path):
+    """#12: lo que no se reconoce se cierra, pero antes se guarda su captura para añadir su firma."""
+    from pyclash.runtime.events import Warning as Warn
+
+    ctx = make_ctx(
+        [fixture_frame("unknown_filter_menu"), fixture_frame("upgrade_panel"), fixture_frame("main_village")],
+        [Transition(0, "tap", 1), Transition(1, "tap", 2)],
+    )
+    seen = recorder(ctx)
+    result = run_task(make_task(capture_dir=tmp_path), ctx)
+    assert result.outcome is Outcome.DONE
+    (saved,) = of_type(seen, CaptureSaved)  # solo la de la pantalla desconocida: el panel conocido no genera captura
+    assert saved.path.startswith(str(tmp_path)) and list(tmp_path.glob("unknown-*.png"))
+    assert not list(tmp_path.glob("recovery-*.png"))
+    warning = next(w for w in of_type(seen, Warn) if "pantalla desconocida" in w.message)
+    assert "ninguna firma se cumple" in warning.message and "botón de cerrar" in warning.message
+    # la captura se guarda ANTES de pulsar: el evento va antes que el aviso de recuperación
+    order = [type(e).__name__ for e in seen]
+    assert order.index("CaptureSaved") < next(i for i, e in enumerate(seen) if isinstance(e, Warn) and "recuperación:" in e.message)
+
+
+def test_an_unknown_dialog_without_a_capture_folder_still_closes_and_says_so():
+    from pyclash.runtime.events import Warning as Warn
+
+    ctx = make_ctx(
+        [fixture_frame("unknown_filter_menu"), fixture_frame("upgrade_panel"), fixture_frame("main_village")],
+        [Transition(0, "tap", 1), Transition(1, "tap", 2)],
+    )
+    seen = recorder(ctx)
+    result = run_task(make_task(), ctx)
+    assert result.outcome is Outcome.DONE and not of_type(seen, CaptureSaved)
+    assert any("sin carpeta de capturas" in w.message for w in of_type(seen, Warn))
+
+
 def test_unknown_dialog_without_safe_exit_taps_nothing_saves_a_capture_and_fails(tmp_path):
     """E2R2: hay un «Okay» verde enorme, pero no se pulsa: no se sabe qué diálogo es."""
     ctx = make_ctx([dialog()])

@@ -109,6 +109,8 @@ class RecoverScreen:
                 if cls.screen is Screen.BATTLE:
                     return self._stop(ctx, "hay una batalla en curso y no se permite rendirse")
                 return self._fail(ctx, frame, f"sin salida segura desde «{cls.screen.value}» ({cls.reason or 'sin botón de cerrar ni terreno vacío'})")
+            if cls.screen is Screen.UNKNOWN:
+                self._record_unknown(ctx, frame, cls, tap.why)
             ctx.events.publish(Warning(f"recuperación: {cls.screen.value} -> {tap.why} en ({tap.x}, {tap.y})"))
             ctx.device.tap(tap.x, tap.y)
             ctx.sleep(cfg.settle_seconds)
@@ -124,10 +126,22 @@ class RecoverScreen:
         ctx.events.publish(Error(reason))
         return TaskResult.failed(reason)
 
-    def _save(self, ctx: Context, frame: Frame | None) -> Path | None:
+    def _record_unknown(self, ctx: Context, frame: Frame, cls: Classification, why: str) -> None:
+        """Una pantalla que no se reconoce se cierra, pero antes se guarda su captura (y se dice por
+        qué no se reconoció): son las que luego se anonimizan para añadir su firma."""
+        path = self._save(ctx, frame, "unknown")
+        if path is not None:
+            ctx.events.publish(CaptureSaved(str(path)))
+        shown = f"captura {path.name}" if path is not None else "sin carpeta de capturas configurada"
+        candidates = ", ".join(f"{s.value} {c:.2f}" for s, c in cls.candidates) or "ninguna"
+        ctx.events.publish(
+            Warning(f"pantalla desconocida ({cls.reason}; firmas cumplidas: {candidates}); se cierra con {why}; {shown}")
+        )
+
+    def _save(self, ctx: Context, frame: Frame | None, prefix: str = "recovery") -> Path | None:
         if frame is None or self.config.capture_dir is None:
             return None
         self.config.capture_dir.mkdir(parents=True, exist_ok=True)
-        path = self.config.capture_dir / f"recovery-{int(ctx.clock.now() * 1000)}.png"
+        path = self.config.capture_dir / f"{prefix}-{int(ctx.clock.now() * 1000)}.png"
         Image.fromarray(frame.image).save(path)
         return path

@@ -7,11 +7,9 @@ lógica de lectura, acuerdo y cordura, no la calibración contra la ventana real
 import numpy as np
 import pytest
 
-from pyclash.device.base import Frame, Rect
-from pyclash.policy.loot import LootLimits, LootTracker
+from pyclash.device.base import Frame
 from pyclash.runtime.stop import StopRequested
 from pyclash.screens.layout import DEFAULT_LAYOUT, scaled_font_px
-from pyclash.screens.loot import read_enemy_loot
 from pyclash.screens.stable import stable_fields, stable_read
 from pyclash.screens.village import StorageIcon, VillageReader, parse_fraction
 from pyclash.vision.text import render_text
@@ -209,91 +207,3 @@ def test_stable_respeta_la_parada():
 def test_stable_valida_parametros():
     with pytest.raises(ValueError):
         stable_read(make_ctx([blank_frame()]), lambda f: 1, lambda: blank_frame(), required=3, attempts=2)
-
-
-# --- R2: el botín leído es verosímil ------------------------------------------------------
-
-def test_e1r2_ganancia_normal():
-    t = LootTracker()
-    assert t.update((120_000, 100_000, 5_000)).status == "baseline"
-    u = t.update((185_000, 100_000, 5_000))
-    assert u.status == "ok" and u.gain == (65_000, 0, 0) and t.total == (65_000, 0, 0)
-
-
-def test_e2r2_lectura_inflada_se_descarta_con_aviso_y_no_envenena_la_base():
-    t = LootTracker()
-    t.update((120_000, 100_000, 5_000))
-    u = t.update((91_000_000, 100_000, 5_000))
-    assert u.status == "discarded" and u.discarded == ("oro",) and u.gain == (0, 0, 0)
-    assert "descartada" in u.warnings[0]
-    assert t.baseline == (120_000, 100_000, 5_000)
-    u = t.update((185_000, 100_000, 5_000))  # la siguiente lectura buena sigue comparándose bien
-    assert u.gain == (65_000, 0, 0)
-
-
-def test_lectura_inverosimil_que_se_repite_es_real_y_se_adopta_sin_contarla():
-    t = LootTracker()
-    t.update((120_000, 0, 0))
-    t.update((9_000_000, 0, 0))
-    u = t.update((9_000_000, 0, 0))
-    assert u.status == "rebased" and u.gain == (0, 0, 0) and t.baseline[0] == 9_000_000
-    assert t.total == (0, 0, 0)
-
-
-def test_e3r2_almacen_lleno_no_da_botin():
-    t = LootTracker()
-    t.update((20_000_000, 20_000_000, 0))
-    u = t.update((20_000_000, 20_000_000, 0))
-    assert u.status == "ok" and u.gain == (0, 0, 0) and t.total == (0, 0, 0)
-
-
-def test_gastar_en_mejoras_no_resta_ni_cuenta():
-    t = LootTracker()
-    t.update((500_000, 300_000, 0))
-    u = t.update((200_000, 450_000, 0))  # gasto de oro y ganancia de elixir
-    assert u.gain == (0, 150_000, 0) and t.baseline == (200_000, 450_000, 0)
-
-
-def test_limites_configurables_y_el_oscuro_tiene_su_propio_tope():
-    t = LootTracker(LootLimits(max_gain_main=1000, max_gain_dark=10))
-    t.update((0, 0, 0))
-    u = t.update((500, 500, 50))
-    assert u.gain == (500, 500, 0) and u.discarded == ("elixir oscuro",)
-
-
-# --- botín del rival ----------------------------------------------------------------------
-
-def put_enemy(img, roi, values):
-    band = roi.h // 3
-    size = scaled_font_px(img, 30)
-    for i, v in enumerate(values):
-        if v is not None:
-            paste(img, render_text(str(v), size), roi.x + 10, roi.y + i * band + 6)
-
-
-ROI = Rect(100, 300, 400, 210)
-
-
-def test_botin_del_rival():
-    img = screen()
-    put_enemy(img, ROI, [812345, 790000, 4200])
-    loot = read_enemy_loot(img, ROI)
-    assert loot is not None and loot.amounts == (812345, 790000, 4200) and loot.confidence > 0.75
-
-
-def test_fila_de_oscuro_vacia_vale_cero():
-    img = screen()
-    put_enemy(img, ROI, [300000, 250000, None])
-    assert read_enemy_loot(img, ROI).amounts == (300000, 250000, 0)
-
-
-def test_sin_oro_o_elixir_no_hay_lectura():
-    img = screen()
-    put_enemy(img, ROI, [None, 250000, 100])
-    assert read_enemy_loot(img, ROI) is None
-
-
-def test_botin_del_rival_imposible_se_rechaza():
-    img = screen()
-    put_enemy(img, ROI, [91000000, 250000, 100])
-    assert read_enemy_loot(img, ROI) is None

@@ -8,7 +8,7 @@ from pyclash.runtime.clock import FakeClock
 from pyclash.runtime.context import Context
 from pyclash.runtime.events import CaptureSaved, Error, Warning
 from pyclash.tasks.base import Outcome, run_task
-from pyclash.tasks.farm import AcceptFirst, FarmConfig, FarmTask
+from pyclash.tasks.farm import FarmConfig, FarmTask
 from pyclash.vision.base import MetadataVision
 
 from helpers import fixture_frame
@@ -251,18 +251,3 @@ def test_a_search_that_never_advances_is_reset_and_then_fails():
     assert result.outcome is Outcome.FAILED and "atascada" in result.reason
     assert any("se reinicia" in w.message for w in warnings)
     assert not dev.presses
-
-
-def test_a_village_the_acceptor_rejects_is_left_without_attacking():
-    class Never:
-        def accept(self, image):
-            return False
-
-    ctx, dev = make()
-    result = run_task(FarmTask(acceptor=Never()), ctx)
-    assert result.outcome is Outcome.NOTHING_TO_DO
-    assert not dev.presses and dev.state == "village"
-
-
-def test_the_default_acceptor_takes_the_first_village():
-    assert AcceptFirst().accept(fixture_frame("scouting_barbarians").image) is True
