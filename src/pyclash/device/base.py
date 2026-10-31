@@ -31,10 +31,31 @@ class Frame:
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
 
+class DeviceError(Exception):
+    """Error de dispositivo que el usuario puede entender y corregir."""
+
+
+class WindowNotFound(DeviceError):
+    pass
+
+
+class WindowMinimized(DeviceError):
+    pass
+
+
+class BlackCapture(DeviceError):
+    pass
+
+
+class CaptureFailed(DeviceError):
+    pass
+
+
 @dataclass(frozen=True)
 class Capabilities:
     hold: bool = True
     swipe: bool = True
+    scroll: bool = True
 
 
 class Device(Protocol):
@@ -43,6 +64,7 @@ class Device(Protocol):
     def capture(self) -> Frame: ...
     def tap(self, x: int, y: int) -> None: ...
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration: float = 0.3) -> None: ...
+    def scroll(self, x: int, y: int, amount: int) -> None: ...
     def press(self, x: int, y: int) -> None: ...
     def release(self) -> None: ...
     @property

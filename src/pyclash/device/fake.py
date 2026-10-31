@@ -11,7 +11,7 @@ from .base import Capabilities, Frame, Rect
 
 @dataclass(frozen=True)
 class Action:
-    kind: str  # "tap" | "swipe" | "press" | "release"
+    kind: str  # "tap" | "swipe" | "scroll" | "press" | "release"
     args: tuple
     at: float
 
@@ -67,6 +67,11 @@ class FakeDevice:
         if not self._caps.swipe:
             raise NotImplementedError("swipe no disponible en este dispositivo")
         self._act("swipe", (x1, y1, x2, y2, duration), x1, y1)
+
+    def scroll(self, x: int, y: int, amount: int) -> None:
+        if not self._caps.scroll:
+            raise NotImplementedError("scroll no disponible en este dispositivo")
+        self._act("scroll", (x, y, amount), x, y)
 
     def press(self, x: int, y: int) -> None:
         if not self._caps.hold:
