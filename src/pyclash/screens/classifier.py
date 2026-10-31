@@ -34,6 +34,7 @@ class Screen(str, Enum):
     PLACEMENT = "placement"
     BATTLE = "battle"
     CONFIRM_SURRENDER = "confirm_surrender"  # aviso conocido
+    NEED_MORE_GOLD = "need_more_gold"  # «You need more Gold»: ofrece comprar el oro con gemas (nunca se pulsa)
     RESULT = "result"
     CHEST_REWARD = "chest_reward"
     LOGIN = "login"  # inicio de sesión de Supercell: el bot se detiene y no interactúa

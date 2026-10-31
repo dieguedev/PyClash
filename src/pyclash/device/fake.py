@@ -79,6 +79,11 @@ class FakeDevice:
         self._held = True
         self._act("press", (x, y), x, y)
 
+    def move(self, x: int, y: int) -> None:
+        if not self._held:
+            raise RuntimeError("move sin pulsación previa (falta press)")
+        self._act("move", (x, y), x, y)
+
     def release(self) -> None:
         self._held = False
         self._act("release", (), None, None)

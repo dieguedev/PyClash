@@ -17,6 +17,7 @@ from .base import (
     BlackCapture,
     Capabilities,
     CaptureFailed,
+    DeviceError,
     Frame,
     Rect,
     WindowMinimized,
@@ -353,6 +354,13 @@ class GooglePlayGamesDevice:
         wx, wy = self._window_point(x, y)
         self._send(_WM_LBUTTONDOWN, _MK_LBUTTON, wx, wy)
         self._held, self._last_pos = True, (wx, wy)
+
+    def move(self, x: int, y: int) -> None:
+        if not self._held:
+            raise DeviceError("move sin pulsación previa (falta press)")
+        wx, wy = self._window_point(x, y)
+        self._send(_WM_MOUSEMOVE, _MK_LBUTTON, wx, wy)
+        self._last_pos = (wx, wy)
 
     def release(self) -> None:
         if self._held:

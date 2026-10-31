@@ -90,6 +90,8 @@ ESCAPES: dict[Screen, tuple[EscapeRoute, ...]] = {
     Screen.ATTACK_MENU: (EmptyTerrain(box(0.55, 0.15, 0.80, 0.45), min_value=50),),  # PROVISIONAL: el menú oscurece el mundo
     Screen.FINDING_OPPONENT: (TextButton(_FIND_BATTLE_END),),  # PROVISIONAL
     Screen.RESULT: (GreenButton(box(0.40, 0.76, 0.60, 0.94), "Return Home"),),
+    # Solo la X: el botón verde de este aviso gasta gemas y no está entre las vías.
+    Screen.NEED_MORE_GOLD: (CloseButton(box(0.62, 0.28, 0.72, 0.40)),),
 }
 
 # Pantalla desconocida: solo un botón de cerrar localizado o terreno vacío. Nunca un «OK».

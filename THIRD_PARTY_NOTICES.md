@@ -25,3 +25,9 @@ PyClash es una implementación inspirada en las ideas de los siguientes proyecto
 `src/pyclash/assets/fonts/SupercellMagic.ttf` es la fuente que usa Clash of Clans. Se incluye para
 renderizar texto y dígitos y buscarlos por plantilla; sus derechos pertenecen a sus titulares
 (Supercell). Se tomó de los recursos del repositorio CoC_Bot.
+
+## Retratos de tropas
+
+`src/pyclash/assets/troops/*.png` son recortes pequeños de la cara (zona de los ojos) de las cartas de tropa de
+Clash of Clans. Se incluyen para reconocer qué tropa es cada carta de la barra de despliegue; sus derechos
+pertenecen a sus titulares (Supercell). Se recortaron de capturas propias.

@@ -95,6 +95,16 @@ DEFAULT_SIGNATURES: tuple[ScreenSignature, ...] = (
         ),
         priority=2,
     ),
+    # Falta oro al buscar partida (menú de ataque o exploración): el botón verde compra el oro con
+    # gemas y no se pulsa nunca; la salida es la X roja. Tiene prioridad sobre la pantalla de debajo.
+    ScreenSignature(
+        Screen.NEED_MORE_GOLD,
+        (
+            TextIndicator("You need more Gold", box(0.34, 0.30, 0.66, 0.38), 48, threshold=0.5),
+            CloseButtonIndicator(box(0.62, 0.28, 0.72, 0.40)),
+        ),
+        priority=3,
+    ),
     # Textos pequeños y con confianza moderada: se piden dos de tres.
     ScreenSignature(
         Screen.RESULT,
