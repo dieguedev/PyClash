@@ -11,9 +11,17 @@ trazo y se toma la masa mayor: **la aldea**. Los trozos sueltos (un edificio ais
 pequeño) se ignoran. La envolvente convexa de esa masa es la figura «sin entrantes» sobre la que se
 traza.
 
-Sin una masa clara (poca línea roja, o dos masas parecidas) no se devuelve zona: el ataque no empieza.
-Medido sobre capturas reales: la aldea da una masa de 2000–4000 px (a 720 de alto) y la siguiente, menos
-de 500; sin zona roja (batalla, aldea, resultado) la mayor no pasa de ~1250 y la proporción es < 3.
+El contorno de una aldea puede salir partido en varios trozos grandes (un árbol o una roca lo interrumpen
+un momento): los trozos de tamaño parecido y cercanos al mayor se tratan como la misma aldea; los pequeños
+o lejanos, no.
+
+Sin una masa clara (poca línea roja, o la aldea no destaca sobre lo demás) no se devuelve zona: el ataque
+no empieza. Medido sobre capturas reales de exploración a 720-990 de alto: la aldea da 2000-9000 px y los
+trozos sueltos, menos de ~1000.
+
+SOLO ES FIABLE EN LA EXPLORACIÓN. En otras pantallas (la aldea propia, una batalla ya empezada) hay muchas
+cosas rojas (tejados, tropas) y a mayor resolución el tamaño de una masa ya no distingue una aldea de un
+falso positivo. Quien la llama debe haber comprobado antes que la pantalla es la exploración.
 """
 
 from __future__ import annotations
@@ -27,7 +35,9 @@ TOPHAT_KERNEL = 7  # px a 720 de alto
 TOPHAT_THRESHOLD = 12.0  # diferencia del canal «a» (0..255)
 JOIN_FRACTION = 0.014  # dilatación (fracción del alto) para unir los trozos del contorno
 MIN_PIXELS = 1500  # píxeles de la masa mayor a 720 de alto; se escala con el alto
-MIN_RATIO = 3.5  # la masa mayor debe ser al menos esto veces la segunda
+MIN_RATIO = 4.5  # la aldea debe ser al menos esto veces el mayor trozo que no es suyo
+MERGE_MIN_FRACTION = 0.4  # un trozo de al menos esta fracción del mayor puede ser parte de la misma aldea…
+MERGE_DISTANCE = 0.08  # …si está a menos de esto (fracción del alto) de él
 
 
 @dataclass(frozen=True)
@@ -71,16 +81,29 @@ def read_red_zone(image: np.ndarray) -> RedZoneReading:
     if not sizes:
         return RedZoneReading(None, "no se ve ninguna línea roja")
     main, index = sizes[0]
-    second = sizes[1][0] if len(sizes) > 1 else 0
-    ratio = main / second if second else float("inf")
-    if main < MIN_PIXELS * scale:
-        return RedZoneReading(None, f"la zona roja se ve poco ({main} px)")
+
+    # El contorno de una aldea puede salir partido en trozos grandes (un árbol o una roca lo interrumpen):
+    # los trozos de tamaño parecido y cercanos al mayor son la misma aldea. Los pequeños o lejanos, no.
+    village = (labels == index) & (mask > 0)
+    parts = [i for s, i in sizes if s >= MERGE_MIN_FRACTION * main]
+    if len(parts) > 1:
+        big = (np.isin(labels, parts) & (mask > 0)).astype(np.uint8)
+        reach = max(3, round(MERGE_DISTANCE * h)) | 1
+        _, linked = cv2.connectedComponents(cv2.dilate(big, np.ones((reach, reach), np.uint8)), connectivity=8)
+        anchor = np.argwhere(village)[0]
+        village = (big > 0) & (linked == linked[anchor[0], anchor[1]])
+    merged = {int(i) for i in np.unique(labels[village])}
+    pixels = int(village.sum())
+    rest = max((s for s, i in sizes if i not in merged), default=0)
+    ratio = pixels / rest if rest else float("inf")
+    if pixels < MIN_PIXELS * scale:
+        return RedZoneReading(None, f"la zona roja se ve poco ({pixels} px)")
     if ratio < MIN_RATIO:
-        return RedZoneReading(None, f"no hay una masa roja clara (la mayor es solo {ratio:.1f} veces la segunda)")
-    ys, xs = np.nonzero((labels == index) & (mask > 0))
+        return RedZoneReading(None, f"no hay una masa roja clara (la aldea es solo {ratio:.1f} veces el siguiente trozo)")
+    ys, xs = np.nonzero(village)
     hull = cv2.convexHull(np.stack([xs, ys], axis=1).astype(np.int32))[:, 0, :]
     center = (float(xs.mean()), float(ys.mean()))
-    return RedZoneReading(RedZone(tuple((int(x), int(y)) for x, y in hull), center, main, ratio))
+    return RedZoneReading(RedZone(tuple((int(x), int(y)) for x, y in hull), center, pixels, ratio))
 
 
 __all__ = ["RedZone", "RedZoneReading", "read_red_zone"]

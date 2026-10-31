@@ -216,6 +216,9 @@ class FarmTask:
 
     def _attack(self, ctx: Context, army: Army) -> TaskResult:
         image = ctx.device.capture().image
+        screen = self.classifier.classify(image).screen
+        if screen is not Screen.FINDING_OPPONENT:  # la zona roja solo se lee en la exploración (ver red_zone.py)
+            return self._abort(ctx, image, f"se esperaba la exploración y la pantalla es «{screen.value}»: no se despliega nada")
         if not self.acceptor.accept(image):
             suffix = self._leave_search(ctx)
             return TaskResult.nothing_to_do(f"la aldea no cumple lo exigido{suffix}")

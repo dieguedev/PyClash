@@ -3,7 +3,7 @@
 import random
 
 from pyclash.device.base import Capabilities, Frame
-from pyclash.policy.armies import Army
+from pyclash.policy.armies import ARMIES, Army
 from pyclash.runtime.clock import FakeClock
 from pyclash.runtime.context import Context
 from pyclash.runtime.events import CaptureSaved, Error, Warning
@@ -202,6 +202,22 @@ def test_missing_troop_fails_before_touching_the_battle_and_leaves_the_search():
     assert not dev.presses
     assert dev.state == "village"  # End Battle, gratis
     assert errors
+
+
+def test_the_red_zone_is_only_read_in_the_scouting_screen():
+    # Si la pantalla ya no es la exploración (p. ej. empezó la batalla), no se lee zona ni se despliega.
+    ctx, dev = make()
+    dev.state = "battle"
+    result = FarmTask()._attack(ctx, ARMIES["barbarians"])
+    assert result.outcome is Outcome.FAILED and "exploración" in result.reason
+    assert not dev.presses and not dev.moves
+
+
+def test_a_village_with_a_split_red_zone_is_attacked():
+    ctx, dev = make(screens={"scout": "scouting_split_zone"})
+    result = run_task(FarmTask(), ctx)
+    assert result.outcome is Outcome.DONE, result
+    assert dev.moves
 
 
 def test_a_chosen_army_the_bot_does_not_know_fails_clearly():

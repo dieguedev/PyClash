@@ -37,6 +37,7 @@ EXPECTED = {
     "need_more_gold_search": Screen.NEED_MORE_GOLD,
     "scouting_barbarians": Screen.FINDING_OPPONENT,
     "scouting_base": Screen.FINDING_OPPONENT,
+    "scouting_split_zone": Screen.FINDING_OPPONENT,
     "attacking_no_more_barbarians": Screen.BATTLE,
     "result": Screen.RESULT,
     "unknown_filter_menu": Screen.UNKNOWN,
