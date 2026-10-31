@@ -13,8 +13,17 @@ MARKER_VALUE = "1"
 Region = tuple[int, int, int, int]  # x, y, ancho, alto
 
 
-def anonymize(src: Path, dst: Path, regions: list[Region], fill: tuple[int, int, int] = (0, 0, 0)) -> None:
+def anonymize(
+    src: Path,
+    dst: Path,
+    regions: list[Region],
+    fill: tuple[int, int, int] = (0, 0, 0),
+    size: tuple[int, int] | None = None,
+) -> None:
     """Escribe en `dst` una copia de `src` con `regions` rellenas y el marcador de anonimizado.
+
+    `regions` se dan en coordenadas del original; `size` (ancho, alto) reduce la imagen después
+    de taparlas, para que los fixtures no pesen varios MB.
 
     Se vuelve a construir la imagen desde los píxeles, de modo que no se arrastran
     metadatos (EXIF, etc.) del original. `dst` no puede ser `src`.
@@ -29,6 +38,8 @@ def anonymize(src: Path, dst: Path, regions: list[Region], fill: tuple[int, int,
         if rw <= 0 or rh <= 0 or x < 0 or y < 0 or x + rw > w or y + rh > h:
             raise ValueError(f"región fuera de la imagen o inválida: {(x, y, rw, rh)}")
         clean.paste(fill, (x, y, x + rw, y + rh))
+    if size is not None:
+        clean = clean.resize(size, Image.LANCZOS)
     meta = PngInfo()
     meta.add_text(MARKER_KEY, MARKER_VALUE)
     Path(dst).parent.mkdir(parents=True, exist_ok=True)

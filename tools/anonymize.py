@@ -1,4 +1,4 @@
-"""Uso: python tools/anonymize.py ORIGINAL.png DESTINO.png --region X,Y,W,H [--region ...]
+"""Uso: python tools/anonymize.py ORIGINAL.png DESTINO.png --region X,Y,W,H [--region ...] [--size ANCHOxALTO]
 
 El original NO debe estar dentro del repositorio (usa p. ej. captures_raw/, ignorado por git).
 """
@@ -16,9 +16,11 @@ def main() -> None:
     p.add_argument("src", type=Path)
     p.add_argument("dst", type=Path)
     p.add_argument("--region", action="append", default=[], help="X,Y,W,H a tapar")
+    p.add_argument("--size", help="ANCHOxALTO: reduce la imagen tras tapar las regiones")
     a = p.parse_args()
     regions = [tuple(int(v) for v in r.split(",")) for r in a.region]
-    anonymize(a.src, a.dst, regions)
+    size = tuple(int(v) for v in a.size.lower().split("x")) if a.size else None
+    anonymize(a.src, a.dst, regions, size=size)
     print(f"Escrito {a.dst}")
 
 

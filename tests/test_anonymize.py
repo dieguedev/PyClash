@@ -70,3 +70,14 @@ def test_check_fixtures_passes_on_marked_image():
     finally:
         ok.unlink(missing_ok=True)
         src.unlink(missing_ok=True)
+
+
+def test_size_reduces_after_blanking_in_original_coordinates(tmp_path):
+    src, dst = tmp_path / "a.png", tmp_path / "b.png"
+    _make(src)
+    anonymize(src, dst, [(0, 0, 20, 30)], size=(20, 15))
+    assert is_anonymized(dst)
+    with Image.open(dst) as im:
+        assert im.size == (20, 15)
+        assert im.getpixel((2, 7)) == (0, 0, 0)  # la región se tapó antes de reducir
+        assert im.getpixel((18, 7)) == (200, 10, 10)
