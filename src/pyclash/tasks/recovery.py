@@ -31,6 +31,7 @@ class RecoveryConfig:
     terrain_fallback: bool = True
     black_patience: int = 3  # capturas negras seguidas antes de dar el juego por cerrado
     relaunch_wait: float = 20.0
+    reload_wait: float = 30.0  # espera tras «RELOAD GAME» (aviso de desconexión por inactividad)
     capture_dir: Path | None = None  # dónde guardar la captura del fallo (None: no se guarda)
 
 
@@ -113,7 +114,8 @@ class RecoverScreen:
                 self._record_unknown(ctx, frame, cls, tap.why)
             ctx.events.publish(Warning(f"recuperación: {cls.screen.value} -> {tap.why} en ({tap.x}, {tap.y})"))
             ctx.device.tap(tap.x, tap.y)
-            ctx.sleep(cfg.settle_seconds)
+            # Recargar el juego tarda: sin esperar, la pantalla de carga (desconocida) gastaría intentos.
+            ctx.sleep(cfg.reload_wait if cls.screen is Screen.INACTIVITY_POPUP else cfg.settle_seconds)
 
     def _stop(self, ctx: Context, reason: str) -> TaskResult:
         ctx.events.publish(Error(reason))

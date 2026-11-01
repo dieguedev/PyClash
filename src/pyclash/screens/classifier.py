@@ -9,9 +9,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
+from importlib import resources
 from typing import Protocol, Sequence
 
+import cv2
 import numpy as np
+from PIL import Image
 
 from ..vision.buttons import find_close_buttons, is_blank
 from ..vision.color import RGB, find_green_buttons
@@ -35,6 +39,7 @@ class Screen(str, Enum):
     BATTLE = "battle"
     CONFIRM_SURRENDER = "confirm_surrender"  # aviso conocido
     NEED_MORE_GOLD = "need_more_gold"  # «You need more Gold»: ofrece comprar el oro con gemas (nunca se pulsa)
+    INACTIVITY_POPUP = "inactivity_popup"  # «Anyone there?»: el juego desconectó por inactividad; se sale con «RELOAD GAME»
     RESULT = "result"
     CHEST_REWARD = "chest_reward"
     LOGIN = "login"  # inicio de sesión de Supercell: el bot se detiene y no interactúa
@@ -71,6 +76,51 @@ class TextIndicator:
         best = None
         for s in {max(1, size - 1), size, size + 1}:  # el redondeo del tamaño cambia con la ventana
             m = finder.matcher.best(image, render_text(self.text, s, rgb), region, prefilter_color=rgb)
+            if m is not None and (best is None or m.confidence > best.confidence):
+                best = m
+        return best
+
+    def score(self, image: np.ndarray, finder: TextFinder) -> float:
+        m = self.best(image, finder)
+        return m.confidence if m is not None else 0.0
+
+
+REFERENCE_HEIGHT = 991  # alto de la captura de la que se sacaron los recortes de `assets/screens/`
+
+
+@lru_cache(maxsize=None)
+def packaged_template(name: str) -> np.ndarray:
+    """Recorte `assets/screens/<name>.png` (RGB), leído una vez."""
+    path = resources.files("pyclash") / "assets" / "screens" / f"{name}.png"
+    with path.open("rb") as handle, Image.open(handle) as im:
+        return np.array(im.convert("RGB"))
+
+
+@dataclass(frozen=True)
+class TemplateIndicator:
+    """Un recorte real del juego (texto que no es de la fuente del juego, p. ej. un diálogo del sistema).
+
+    Se escala por el alto del fotograma respecto a `REFERENCE_HEIGHT` y se prueban tres escalas cercanas.
+    """
+
+    asset: str
+    region: RoiFraction
+    threshold: float = 0.8
+    label: str = ""
+
+    @property
+    def name(self) -> str:
+        return f"recorte «{self.label or self.asset}»"
+
+    def best(self, image: np.ndarray, finder: TextFinder) -> Match | None:
+        base = packaged_template(self.asset)
+        region = self.region.rect(image)
+        best = None
+        for factor in (0.96, 1.0, 1.04):
+            scale = image.shape[0] / REFERENCE_HEIGHT * factor
+            size = (max(1, round(base.shape[1] * scale)), max(1, round(base.shape[0] * scale)))
+            template = cv2.resize(base, size, interpolation=cv2.INTER_AREA)
+            m = finder.matcher.best(image, template, region)
             if m is not None and (best is None or m.confidence > best.confidence):
                 best = m
         return best

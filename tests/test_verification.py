@@ -159,3 +159,10 @@ def test_v1_import_without_data_does_nothing(tmp_path, monkeypatch):
     dev, clock = device(fixture_frame("main_village"))
     out = run_check(check_by_key("v1_import"), dev, clock=clock)
     assert out.result.outcome is Outcome.NOTHING_TO_DO and not (local / "PyClash" / "profiles").exists()
+
+
+def test_inactivity_check_reads_the_popup_without_tapping():
+    dev, clock = device(fixture_frame("inactivity_popup"))
+    out = run_check(check_by_key("inactivity"), dev, clock=clock)
+    assert any("SÍ" in line for line in out.lines) and any("Pulsaría en" in line for line in out.lines)
+    assert dev.actions == []

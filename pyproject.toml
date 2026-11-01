@@ -19,7 +19,7 @@ secrets = ["keyring"]  # almacén de credenciales del sistema; sin él las clave
 where = ["src"]
 
 [tool.setuptools.package-data]
-pyclash = ["data/*.json", "assets/fonts/*.ttf", "assets/troops/*.png", "assets/icons/*.png", "assets/level_badges/*.png"]
+pyclash = ["data/*.json", "assets/fonts/*.ttf", "assets/troops/*.png", "assets/icons/*.png", "assets/screens/*.png","assets/level_badges/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

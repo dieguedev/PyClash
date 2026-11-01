@@ -20,6 +20,7 @@ from .classifier import (
     GreenButtonIndicator,
     Screen,
     ScreenSignature,
+    TemplateIndicator,
     TextIndicator,
 )
 from .layout import RoiFraction
@@ -33,6 +34,9 @@ def box(x1: float, y1: float, x2: float, y2: float) -> RoiFraction:
 _BATTLE_BUTTON = TextIndicator("Battle", box(0.0, 0.89, 0.11, 0.99), 28)
 _BUILD_BUTTON = TextIndicator("Build", box(0.90, 0.89, 0.99, 0.99), 28)
 _BOTTOM_LEFT_RED = box(0.0, 0.76, 0.12, 0.82)  # «End Battle» y «Surrender» comparten sitio
+
+INACTIVITY_TITLE = TemplateIndicator("inactivity_title", box(0.27, 0.38, 0.62, 0.50), label="Anyone there?")
+INACTIVITY_RELOAD = TemplateIndicator("inactivity_reload", box(0.27, 0.51, 0.50, 0.63), label="RELOAD GAME")
 
 DEFAULT_SIGNATURES: tuple[ScreenSignature, ...] = (
     ScreenSignature(Screen.MAIN_VILLAGE, (_BATTLE_BUTTON, _BUILD_BUTTON)),
@@ -104,6 +108,14 @@ DEFAULT_SIGNATURES: tuple[ScreenSignature, ...] = (
             CloseButtonIndicator(box(0.62, 0.28, 0.72, 0.40)),
         ),
         priority=3,
+    ),
+    # Diálogo del sistema (no usa la fuente del juego) sobre la aldea, que se ve detrás con «Battle» y «Build»:
+    # por eso manda sobre todo lo demás. Se exige el título Y el botón: otro diálogo con «RELOAD GAME»
+    # (p. ej. un error de conexión) no es este y no se pulsa.
+    ScreenSignature(
+        Screen.INACTIVITY_POPUP,
+        (INACTIVITY_TITLE, INACTIVITY_RELOAD),
+        priority=4,
     ),
     # Textos pequeños y con confianza moderada: se piden dos de tres.
     ScreenSignature(

@@ -19,9 +19,9 @@ import numpy as np
 from ..vision.buttons import find_close_buttons, find_empty_terrain
 from ..vision.color import find_green_buttons
 from ..vision.text import TextFinder
-from .classifier import Screen, TextIndicator
+from .classifier import Screen, TemplateIndicator, TextIndicator
 from .layout import RoiFraction
-from .signatures import box
+from .signatures import INACTIVITY_RELOAD, box
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,21 @@ class GreenButton:
         return Tap(*found[0].center, f"botón «{self.name}»") if found else None
 
 
-_FIND_BATTLE_END = TextIndicator("End Battle", box(0.0, 0.76, 0.12, 0.82), 25)
+@dataclass(frozen=True)
+class TemplateButton:
+    """Un botón identificado por su recorte, que debe verse en su región."""
+
+    indicator: TemplateIndicator
+    name: str
+
+    def locate(self, image: np.ndarray, finder: TextFinder) -> Tap | None:
+        found = self.indicator.best(image, finder)
+        if found is None or found.confidence < self.indicator.threshold:
+            return None
+        return Tap(*found.center, f"botón «{self.name}»")
+
+
+_FIND_BATTLE_END =TextIndicator("End Battle", box(0.0, 0.76, 0.12, 0.82), 25)
 _SURRENDER = TextIndicator("Surrender", box(0.0, 0.76, 0.12, 0.82), 24)
 _OKAY = TextIndicator("Okay", box(0.54, 0.58, 0.64, 0.66), 42)
 _CANCEL = TextIndicator("Cancel", box(0.34, 0.58, 0.46, 0.66), 42)
@@ -92,6 +106,8 @@ ESCAPES: dict[Screen, tuple[EscapeRoute, ...]] = {
     Screen.RESULT: (GreenButton(box(0.40, 0.76, 0.60, 0.94), "Return Home"),),
     # Solo la X: el botón verde de este aviso gasta gemas y no está entre las vías.
     Screen.NEED_MORE_GOLD: (CloseButton(box(0.62, 0.28, 0.72, 0.40)),),
+    # Se desconectó por inactividad: la única salida es recargar el juego.
+    Screen.INACTIVITY_POPUP: (TemplateButton(INACTIVITY_RELOAD, "RELOAD GAME"),),
 }
 
 # Pantalla desconocida: solo un botón de cerrar localizado o terreno vacío. Nunca un «OK».

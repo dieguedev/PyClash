@@ -40,6 +40,7 @@ EXPECTED = {
     "scouting_split_zone": Screen.FINDING_OPPONENT,
     "attacking_no_more_barbarians": Screen.BATTLE,
     "result": Screen.RESULT,
+    "inactivity_popup": Screen.INACTIVITY_POPUP,
     "unknown_filter_menu": Screen.UNKNOWN,
 }
 
@@ -207,3 +208,40 @@ def test_text_font_size_matches_at_the_scaled_height():
     image = image_of("main_village")
     assert scaled_font_px(image, 28) == 14
     assert render_text("Battle", 14).shape[0] > 5
+
+
+# --- aviso de desconexión por inactividad ------------------------------------------------------
+
+
+def test_inactivity_popup_beats_the_village_visible_behind_it(classifier):
+    """La aldea se ve detrás (con «Battle» y «Build»): sin prioridad, el bot creería estar en ella."""
+    got = classifier.classify(image_of("inactivity_popup"))
+    assert Screen.MAIN_VILLAGE in {s for s, _ in got.candidates}
+    assert got.screen is Screen.INACTIVITY_POPUP
+
+
+@pytest.mark.parametrize("name", [n for n in EXPECTED if n != "inactivity_popup"])
+def test_inactivity_popup_is_not_seen_on_other_screens(classifier, name):
+    report = classifier.diagnose(image_of(name), only=[Screen.INACTIVITY_POPUP])[Screen.INACTIVITY_POPUP]
+    assert not report.matched, report.describe()
+
+
+def test_inactivity_popup_needs_both_title_and_button(classifier):
+    """Otro diálogo con «RELOAD GAME» pero otro título no se pulsa."""
+    image = image_of("inactivity_popup").copy()
+    h, w = image.shape[:2]
+    image[int(0.40 * h):int(0.47 * h), int(0.28 * w):int(0.55 * w)] = (24, 26, 31)  # borra el título
+    assert classifier.classify(image).screen is not Screen.INACTIVITY_POPUP
+
+
+@pytest.mark.parametrize("scale", [0.8, 1.5])
+def test_inactivity_popup_escape_lands_on_the_button_at_any_size(scale):
+    import cv2
+
+    image = image_of("inactivity_popup")
+    h, w = image.shape[:2]
+    resized = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    tap = find_escape(resized, Screen.INACTIVITY_POPUP, ScreenClassifier().finder)
+    assert tap is not None and "RELOAD GAME" in tap.why
+    rh, rw = resized.shape[:2]
+    assert abs(tap.x / rw - 426 / 1280) < 0.02 and abs(tap.y / rh - 404 / 720) < 0.02

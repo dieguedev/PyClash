@@ -316,3 +316,28 @@ def test_every_tap_on_real_screens_is_an_exit_not_a_confirm_button(name):
         x, y = action.args
         patch = frame.image[y - 3:y + 4, x - 3:x + 4]
         assert color_fraction(patch, BUTTON_GREEN, tolerance=25) < 0.5, f"{name}: toque en ({x}, {y})"
+
+
+def test_inactivity_popup_is_left_by_tapping_reload_game_and_waiting_for_the_reload():
+    ctx = make_ctx(
+        [fixture_frame("inactivity_popup"), fixture_frame("main_village")],
+        [Transition(0, "tap", 1)],
+    )
+    seen = recorder(ctx)
+    result = run_task(make_task(), ctx)
+    assert result.outcome is Outcome.DONE
+    (action,) = ctx.device.actions
+    x, y = action.args
+    assert abs(x - 426) <= 12 and abs(y - 404) <= 8  # sobre «RELOAD GAME» (fixture a 1280×720)
+    assert ctx.clock.now() >= RecoveryConfig().reload_wait  # la recarga no se atropella con más toques
+
+
+def test_a_dialog_that_is_not_identified_as_the_inactivity_popup_is_never_tapped_on_its_button():
+    """Sin el botón no se identifica el aviso: no hay toque a ciegas donde estaba."""
+    frame = fixture_frame("inactivity_popup")
+    image = frame.image.copy()
+    h, w = image.shape[:2]
+    image[int(0.51 * h):int(0.63 * h), int(0.27 * w):int(0.50 * w)] = (24, 26, 31)
+    ctx = make_ctx([Frame(image, (w, h), 0.0, {})])
+    run_task(make_task(max_attempts=2), ctx)
+    assert ctx.device.actions == []

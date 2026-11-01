@@ -34,6 +34,7 @@ from ..runtime.events import Event, WallBatchPlanned
 from ..runtime.stop import StopRequested, StopToken
 from ..screens.battle_bar import BarReader
 from ..screens.classifier import Screen, ScreenClassifier
+from ..screens.escapes import find_escape
 from ..screens.red_zone import read_red_zone, read_red_zone_frames
 from ..screens.loot import read_enemy_loot, read_hud_gold, read_next_cost, read_search_cost
 from ..screens.village import VillageReader
@@ -111,6 +112,18 @@ def _check_screen(ctx: Context, _dir: Path) -> CheckOutcome:
         why = classifier.explain(image, Screen.MAIN_VILLAGE)
         if why:
             lines.append(f"Para la aldea: {why}")
+    return CheckOutcome(lines)
+
+
+def _check_inactivity(ctx: Context, _dir: Path) -> CheckOutcome:
+    """Dice si ve el aviso «Anyone there?» y dónde pulsaría «RELOAD GAME», sin pulsar."""
+    image = ctx.device.capture().image
+    classifier = ScreenClassifier()
+    report = classifier.diagnose(image, only=[Screen.INACTIVITY_POPUP])[Screen.INACTIVITY_POPUP]
+    lines = [report.describe(), f"Aviso de inactividad: {'SÍ' if report.matched else 'no'} se reconoce."]
+    tap = find_escape(image, Screen.INACTIVITY_POPUP, classifier.finder)
+    lines.append(f"Pulsaría en {(tap.x, tap.y)} ({tap.why})." if tap else "No localiza el botón: no pulsaría nada.")
+    lines.append("Para probarlo de verdad, espera a que el juego lo muestre (o ponlo con la aldea inactiva unos minutos).")
     return CheckOutcome(lines)
 
 
@@ -325,6 +338,7 @@ def _farm(ctx: Context, directory: Path) -> CheckOutcome:
 
 CHECKS: tuple[Check, ...] = (
     Check("screen", "¿Qué pantalla ve?", "read", "Clasifica la captura actual y explica qué indicador falla.", _check_screen),
+    Check("inactivity", "¿Ve el aviso de inactividad?", "read", "Con «Anyone there?» en pantalla: si lo reconoce y dónde pulsaría «RELOAD GAME». No pulsa.", _check_inactivity),
     Check("village", "Leer la aldea", "read", "Constructores, laboratorio, recursos y almacenes llenos (con acuerdo entre capturas).", _check_village),
     Check("loot", "Leer botín / costes", "read", "En exploración: botín del rival y coste de «Next».", _check_loot),
     Check("bar", "Leer barra de despliegue", "read", "En una batalla: cartas, contadores y cuáles están agotadas.", _check_bar),
