@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -22,6 +23,7 @@ from ..device.base import DeviceError
 from ..device.display import DisplayService
 from ..device.gpg import GooglePlayGamesDevice
 from ..device.probe import ProbeStatus, probe
+from .verification_panel import VerificationPanel
 
 _REASONS = {
     "not_found": "No se encuentra la ventana.",
@@ -68,13 +70,20 @@ class TestWindow(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.combo, 1)
         top.addWidget(self.refresh_btn)
-        layout = QVBoxLayout(self)
+        device_tab = QWidget()
+        layout = QVBoxLayout(device_tab)
         layout.addLayout(top)
         layout.addWidget(self.test_btn)
         layout.addWidget(self.restore_btn)
         layout.addWidget(self.status)
         layout.addWidget(self.preview)
         layout.addLayout(extra)
+
+        tabs = QTabWidget()
+        tabs.addTab(device_tab, "Dispositivo")
+        tabs.addTab(VerificationPanel(self.device), "Verificación")
+        root = QVBoxLayout(self)
+        root.addWidget(tabs)
 
         self.refresh_btn.clicked.connect(self.refresh_windows)
         self.combo.activated.connect(self.on_pick)
