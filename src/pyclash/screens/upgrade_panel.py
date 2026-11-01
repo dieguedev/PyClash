@@ -25,6 +25,7 @@ from ..vision.result import Match, crop
 from ..vision.text import DIGITS, TEXT_COLORS, DigitReader, TextFinder, render_text
 from ..vision.vocabulary import Vocabulary
 from .layout import scaled_font_px
+from .level_badge import read_level
 from .panel_layout import FILTER_BUTTON, VILLAGE_PANEL, PanelLayout
 
 Resource = Literal["gold", "elixir", "dark_elixir", "gems"]
@@ -54,6 +55,7 @@ class PanelRow:
     center: tuple[int, int]  # centro del nombre: dónde tocar la fila
     y: int  # línea del coste
     confidence: float = 0.0
+    level: int | None = None  # nivel de la insignia (solo se lee en los muros); None: no se reconoció
 
     @property
     def spendable(self) -> bool:
@@ -249,9 +251,10 @@ class PanelReader:
             affordable = True
         kind: Kind = "wall" if name == "Wall" else "hero" if name in self._heroes else "new_building" if new else "upgrade"
         cx = int(w * (lay.name_x[0] + 0.04))
+        level = read_level(image, name_y) if name == "Wall" else None
         return PanelRow(
             name, quantity, cost, a.resource if cost is not None else None, a.free, new, duration, affordable,
-            kind, section, (cx, name_y), a.y, min(name_conf, cost_conf),
+            kind, section, (cx, name_y), a.y, min(name_conf, cost_conf), level,
         )
 
     def _name(self, image: np.ndarray, region: Rect) -> tuple[str | None, Rect | None, str, float, float]:
@@ -446,10 +449,25 @@ class PanelScanner:
     @staticmethod
     def _add(found: dict[tuple, PanelRow], fresh: list[tuple], row: PanelRow) -> None:
         """Una fila vista varias veces cuenta una: gana la lectura con más campos. `fresh` recoge las claves
-        que no se habían visto antes."""
+        que no se habían visto antes.
+
+        Dos filas con el mismo nombre y cantidad pero distinto coste son filas distintas (en el panel real
+        hay varios «Elixir Collector»: uno nuevo y mejoras de nivel). Un coste sin leer en una de las dos
+        lecturas no las distingue: se toman por la misma fila.
+        """
         if row.name is None:
             return  # sin nombre no se puede deduplicar ni decidir: se reintenta en otra captura
-        key = (row.name, row.quantity)
+        base = (row.name, row.quantity)
+        key = None
+        variants = 0
+        for k, seen in found.items():
+            if k[:2] != base:
+                continue
+            variants += 1
+            if key is None and (seen.cost is None or row.cost is None or seen.cost == row.cost):
+                key = k
+        if key is None:
+            key = (*base, variants)
         old = found.get(key)
         if old is None:
             found[key] = row
@@ -462,6 +480,19 @@ class PanelScanner:
 
 def _completeness(row: PanelRow) -> int:
     return sum(v is not None for v in (row.cost, row.resource, row.duration, row.affordable, row.section)) + row.free
+
+
+def _button_active(image: np.ndarray, label: Rect, min_fraction: float = 0.3) -> bool:
+    """¿El botón de la ventana del filtro está activo? El juego lo pinta de amarillo-naranja (medido: 0,73 de
+    sus píxeles activo y 0,0 en reposo). `label` es la caja del texto del botón; el botón lo rodea."""
+    cx, cy = label.center
+    hw, hh = int(label.w * 0.8), int(label.h * 1.4)
+    patch = image[max(0, cy - hh) : cy + hh, max(0, cx - hw) : cx + hw]
+    if patch.size == 0:
+        return False
+    hsv = cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)
+    mask = (hsv[..., 0] >= 12) & (hsv[..., 0] <= 32) & (hsv[..., 1] >= 150) & (hsv[..., 2] >= 170)
+    return float(mask.mean()) >= min_fraction
 
 
 def apply_sort(
@@ -488,19 +519,42 @@ def apply_sort(
     if title is None or title[0] < 0.7:
         return False  # la ventana del filtro no se abrió: no se pulsa nada más
     size = scaled_font_px(frame.image, 26)
-    chosen = fine_match(finder, frame.image, _ORDER_LABEL[order], white, popup, size)
-    if chosen is None or chosen[0] < 0.55:
+    # «Cost Max» y «Cost Min» se diferencian en una letra y puntúan casi igual en el sitio del otro (medido en
+    # el juego real: 0,58 frente a 0,53). No se decide por la diferencia de puntuación sino por la posición: se
+    # buscan las dos etiquetas, deben quedar en la misma fila y distintas, con «Max» a la izquierda de «Min».
+    found = {key: fine_match(finder, frame.image, label, white, popup, size) for key, label in _ORDER_LABEL.items()}
+    left, right = found["cost_max"], found["cost_min"]
+    if left is None or right is None:
         return False
-    # «Cost Max» y «Cost Min» se diferencian en una letra y los botones puntúan solo ~0.6: en el sitio
-    # elegido, la etiqueta pedida debe ganar claramente a la contraria, o no se pulsa nada.
-    box_ = chosen[1]
-    local = Rect(box_.x - 4, box_.y - 4, box_.w + 8, box_.h + 8)
-    other = _ORDER_LABEL["cost_min" if order == "cost_max" else "cost_max"]
-    rival = fine_match(finder, frame.image, other, white, local, size)
-    if rival is not None and chosen[0] - rival[0] < 0.05:
+    # La que se va a pulsar debe casar razonablemente (medido: 0,55-0,58) y la otra solo fija la posición; la
+    # comprobación geométrica de abajo es lo que la valida.
+    wanted, other = (left, right) if order == "cost_max" else (right, left)
+    if wanted[0] < 0.5 or other[0] < 0.45:
         return False
+    row_tolerance = max(left[1].h, right[1].h)
+    if abs(left[1].center[1] - right[1].center[1]) > row_tolerance or left[1].x + left[1].w > right[1].x:
+        return False  # no son dos botones distintos en fila: no se pulsa nada
+    chosen = left if order == "cost_max" else right
+
+    def popup_open(image: np.ndarray) -> bool:
+        title_now = fine_match(finder, image, "Sorting", white, popup, scaled_font_px(image, 32))
+        return title_now is not None and title_now[0] >= 0.7
+
+    def close_popup() -> bool:
+        """Cierra la ventana volviendo a pulsar el botón del filtro (el que la abrió). True si se cerró."""
+        ctx.device.tap(*FILTER_BUTTON.rect(frame.image).center)
+        ctx.sleep(settle)
+        return not popup_open(ctx.device.capture().image)
+
+    if _button_active(frame.image, chosen[1]):
+        # El filtro es un interruptor que el juego recuerda: pulsarlo ya activo lo APAGARÍA. Se deja como está.
+        return close_popup()
     ctx.device.tap(*chosen[1].center)
     ctx.sleep(settle)
     after = ctx.device.capture()
-    again = fine_match(finder, after.image, "Sorting", white, popup, scaled_font_px(after.image, 32))
-    return again is None or again[0] < 0.7
+    if not popup_open(after.image):
+        return True  # la ventana se cerró sola al elegir
+    # Medido en el juego: elegir NO cierra la ventana; el botón pasa a naranja. Se comprueba eso y se cierra.
+    if not _button_active(after.image, chosen[1]):
+        return False
+    return close_popup()

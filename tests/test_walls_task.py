@@ -361,3 +361,48 @@ def test_coste_en_rojo_solo_cuenta_el_del_boton_del_recurso_elegido():
                      village=FakeVillage(vstate(gold=1500, elixir=4500)))
     result = run_task(task, ctx)
     assert result.outcome is Outcome.DONE and not tapped(ctx, REMOVE) and tapped(ctx, UPGRADE_E)
+
+
+# --------------------------------------------------------------------------- nivel: el elixir solo desde el 5
+
+
+def _wall_at(level, cost=5000):
+    return PanelRow("Wall", 28, cost, "gold", False, False, None, True, "wall", None, (1000, 300), 300, level=level)
+
+
+def _dry_with_elixir_rich(row):
+    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    task, ctx = make(
+        config=cfg, village=FakeVillage(vstate(gold=30000, elixir=100000)), readings=[([row], True)],
+        inputs=lambda c: WallInputs(gold_floor=0, upgrades_pending=False),
+    )
+    planned = collect(ctx, WallBatchPlanned)
+    return run_task(task, ctx), planned
+
+
+@pytest.mark.parametrize("level", [2, 3, 4])
+def test_muros_que_suben_a_nivel_4_o_menos_se_pagan_solo_con_oro(level):
+    result, planned = _dry_with_elixir_rich(_wall_at(level))
+    assert result.outcome is Outcome.DONE
+    assert [p.resource for p in planned][-1] == "gold"  # con 100 000 de elixir, la política prefiere elixir: se veta
+
+
+def test_muros_de_nivel_5_o_mas_pueden_pagarse_con_elixir():
+    _, planned = _dry_with_elixir_rich(_wall_at(5, cost=20000))
+    assert planned[-1].resource == "elixir"
+
+
+def test_con_nivel_desconocido_no_se_veta_el_elixir():
+    """Sin lectura del nivel manda el botón del juego: el veto nunca se aplica por dudas."""
+    _, planned = _dry_with_elixir_rich(_wall_at(None))
+    assert planned[-1].resource == "elixir"
+
+
+def test_nivel_bajo_sin_oro_gastable_no_hace_nada_y_lo_explica():
+    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    task, ctx = make(
+        config=cfg, village=FakeVillage(vstate(gold=30000, elixir=100000)), readings=[([_wall_at(3)], True)],
+        inputs=lambda c: WallInputs(gold_floor=None, upgrades_pending=False),  # oro sin colchón conocido: no se gasta
+    )
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.NOTHING_TO_DO and "nivel 3" in result.reason

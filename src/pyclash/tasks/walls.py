@@ -28,7 +28,9 @@ from ..policy.walls import (
     WallSettings,
     WallState,
     batch_size,
+    ELIXIR_MIN_LEVEL,
     decide_walls,
+    gold_only_level,
     next_add,
     verified_in_panel,
 )
@@ -113,7 +115,8 @@ class WallBatchTask(PanelTask):
         given = self.inputs(ctx)
         unavailable = frozenset(r for r in ("gold", "elixir") if not ctx.cooldowns.ready(self._no_button_key(r)))
         settings = replace(cfg.settings, enabled=cfg.settings.enabled - unavailable)
-        decision = decide_walls(WallState(resources, free, given.gold_floor, given.upgrades_pending), settings)
+        state = WallState(resources, free, given.gold_floor, given.upgrades_pending)
+        decision = decide_walls(state, settings)
         if decision.resource is None:
             return TaskResult.nothing_to_do(decision.reason)
 
@@ -124,6 +127,15 @@ class WallBatchTask(PanelTask):
         if row is None:
             self._close(ctx)
             return TaskResult.nothing_to_do(f"no hay fila «{WALL}» en el panel")
+        if decision.resource == "elixir" and gold_only_level(row.level):
+            # Los muros que suben al nivel 2, 3 o 4 solo se pagan con oro: se decide de nuevo sin elixir.
+            decision = decide_walls(state, replace(settings, enabled=settings.enabled - {"elixir"}))
+            if decision.resource is None:
+                self._close(ctx)
+                rest = "; ".join(r for r in decision.skipped if not r.startswith("elixir:")) or decision.reason
+                return TaskResult.nothing_to_do(
+                    f"los muros suben al nivel {row.level} y el elixir sirve desde el {ELIXIR_MIN_LEVEL}: {rest}"
+                )
         # El coste unitario de la fila vale para los dos recursos (en las capturas, 100 000 en oro y en elixir).
         if row.resource not in ("gold", "elixir") or not row.cost:
             self._close(ctx)

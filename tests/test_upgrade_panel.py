@@ -309,3 +309,88 @@ def test_apply_sort_taps_nothing_more_when_the_popup_did_not_open():
     ctx = make_ctx(frames("upgrade_panel"))
     assert apply_sort(ctx, "cost_max") is False
     assert len(ctx.device.actions) == 1  # solo el botón del filtro
+
+
+# --- filas con el mismo nombre (caso real: varios «Elixir Collector») -----------------------
+
+def _row(name, cost, new=False, y=0):
+    from pyclash.screens.upgrade_panel import PanelRow
+
+    kind = "new_building" if new else "upgrade"
+    return PanelRow(name, 1, cost, "gold", False, new, None, True, kind, None, (1000, y), y)
+
+
+def test_filas_con_el_mismo_nombre_y_distinto_coste_son_filas_distintas():
+    from pyclash.screens.upgrade_panel import PanelScanner
+
+    found, fresh = {}, []
+    for r in (_row("Elixir Collector", 150, new=True), _row("Elixir Collector", 700), _row("Elixir Collector", 300)):
+        PanelScanner._add(found, fresh, r)
+    assert sorted(r.cost for r in found.values()) == [150, 300, 700]
+    assert len(fresh) == 3
+
+
+def test_la_misma_fila_vista_dos_veces_sigue_contando_una():
+    from pyclash.screens.upgrade_panel import PanelScanner
+
+    found, fresh = {}, []
+    for r in (_row("Elixir Collector", 700), _row("Elixir Collector", 700, y=50), _row("Elixir Collector", None)):
+        PanelScanner._add(found, fresh, r)
+    assert len(found) == 1 and len(fresh) == 1
+
+
+def _sort_ctx_real(popup):
+    """Capturas reales del juego: panel -> ventana del filtro (`popup`) -> panel."""
+    button = FILTER_BUTTON.rect(fixture_frame("upgrade_panel").image)
+    return button, make_ctx(
+        [fixture_frame("upgrade_panel"), fixture_frame(popup), fixture_frame("upgrade_panel_filtered")],
+        [Transition(0, "tap", 1, button), Transition(1, "tap", 2, button), Transition(1, "tap", 2)],
+    )
+
+
+def test_apply_sort_does_not_tap_a_sort_button_that_is_already_active():
+    """Captura real con «Cost Max» ya naranja: el filtro es un interruptor, pulsarlo lo APAGARÍA."""
+    button, ctx = _sort_ctx_real("sort_popup_cost_max_active")
+    assert apply_sort(ctx, "cost_max") is True
+    taps = [a.args for a in ctx.device.actions]
+    assert len(taps) == 2 and all(button.contains(*t) for t in taps)  # abrir y cerrar; nunca «Cost Max»
+
+
+def test_apply_sort_taps_cost_max_when_it_is_idle_in_a_real_capture():
+    _, ctx = _sort_ctx_real("sort_popup_idle")
+    assert apply_sort(ctx, "cost_max") is True
+    assert ctx.device.actions[1].args[0] < 0.5 * ctx.device.capture().image.shape[1]  # «Cost Max» a la izquierda
+
+
+def test_apply_sort_cost_min_is_pressed_even_if_cost_max_is_the_active_one():
+    """Con «Cost Max» activo y pidiendo «Cost Min»: se cambia pulsando «Cost Min» (la de la derecha)."""
+    _, ctx = _sort_ctx_real("sort_popup_cost_max_active")
+    assert apply_sort(ctx, "cost_min") is True
+    assert ctx.device.actions[1].args[0] > 0.5 * ctx.device.capture().image.shape[1]
+
+
+def test_apply_sort_succeeds_when_the_popup_stays_open_after_choosing():
+    """Medido en el juego: elegir «Cost Max» NO cierra la ventana, solo pone el botón en naranja."""
+    button = FILTER_BUTTON.rect(fixture_frame("upgrade_panel").image)
+    ctx = make_ctx(
+        [
+            fixture_frame("upgrade_panel"),
+            fixture_frame("sort_popup_idle"),
+            fixture_frame("sort_popup_cost_max_active"),  # sigue abierta, con «Cost Max» naranja
+            fixture_frame("upgrade_panel_filtered"),
+        ],
+        [Transition(0, "tap", 1, button), Transition(1, "tap", 2), Transition(2, "tap", 3, button)],
+    )
+    assert apply_sort(ctx, "cost_max") is True
+    taps = [a.args for a in ctx.device.actions]
+    assert len(taps) == 3 and button.contains(*taps[2])  # abrir, elegir, cerrar
+
+
+def test_apply_sort_fails_if_the_chosen_button_does_not_turn_active():
+    button = FILTER_BUTTON.rect(fixture_frame("upgrade_panel").image)
+    ctx = make_ctx(
+        [fixture_frame("upgrade_panel"), fixture_frame("sort_popup_idle"), fixture_frame("sort_popup_idle")],
+        [Transition(0, "tap", 1, button), Transition(1, "tap", 2)],
+    )
+    assert apply_sort(ctx, "cost_max") is False
+    assert len(ctx.device.actions) == 2  # no sigue pulsando a ciegas

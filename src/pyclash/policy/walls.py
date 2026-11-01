@@ -27,6 +27,13 @@ Resource = str  # "gold" | "elixir"
 Triplet = tuple[int | None, int | None, int | None]  # (oro, elixir, elixir oscuro)
 
 BIG_STEP = 10  # el botón «Add Wall +10»
+ELIXIR_MIN_LEVEL = 5  # los muros se mejoran con elixir solo desde el nivel 5; el 2, 3 y 4 son solo de oro
+
+
+def gold_only_level(level: int | None) -> bool:
+    """True si el nivel al que suben los muros solo admite oro. Con nivel desconocido (None), False: no se
+    sabe, y quien decide se apoya en que el juego ofrezca o no el botón de elixir."""
+    return level is not None and level < ELIXIR_MIN_LEVEL
 STORAGE_FULL_FRACTION = 0.95  # barra del HUD rellena a este nivel o más = almacén lleno (no se distingue del final)
 
 

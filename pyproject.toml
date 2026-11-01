@@ -18,7 +18,7 @@ ocr = ["easyocr"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-pyclash = ["data/*.json", "assets/fonts/*.ttf", "assets/troops/*.png", "assets/icons/*.png"]
+pyclash = ["data/*.json", "assets/fonts/*.ttf", "assets/troops/*.png", "assets/icons/*.png", "assets/level_badges/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
