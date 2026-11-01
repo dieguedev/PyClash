@@ -13,6 +13,7 @@ dependencies = ["Pillow", "numpy", "opencv-python-headless", "rapidfuzz"]
 dev = ["pytest"]
 ui = ["PySide6"]
 ocr = ["easyocr"]
+secrets = ["keyring"]  # almacén de credenciales del sistema; sin él las claves van a un fichero restringido
 
 [tool.setuptools.packages.find]
 where = ["src"]

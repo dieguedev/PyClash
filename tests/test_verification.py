@@ -21,7 +21,7 @@ def device(*frames):
 def test_every_check_has_unique_key_and_known_risk():
     keys = [c.key for c in CHECKS]
     assert len(keys) == len(set(keys))
-    assert {c.risk for c in CHECKS} == {"read", "dry", "spend"}
+    assert {c.risk for c in CHECKS} == {"read", "dry", "write", "spend"}
 
 
 def test_real_spending_checks_are_never_dry():
@@ -111,3 +111,51 @@ def test_card_tap_check_taps_once_and_never_holds_or_swipes(tmp_path):
     assert [a.kind for a in dev.actions] == ["tap"]  # una pulsación sobre la carta: nada de despliegue
     assert not dev.held and out.ok
     assert len(list(tmp_path.glob("card-*.png"))) == 2  # antes y después
+
+
+# ---------------------------------------------------------------- importación de la v1 (#15)
+
+
+def v1_env(tmp_path, monkeypatch, with_data=True):
+    local = tmp_path / "local"
+    monkeypatch.setenv("LOCALAPPDATA", str(local))
+    monkeypatch.setenv("APPDATA", str(tmp_path / "roaming"))
+    if with_data:
+        v1 = local / "PixelChief"
+        v1.mkdir(parents=True)
+        (v1 / "settings.json").write_text('{"upgrade_order": "cheapest", "reserve_builders": 0}', encoding="utf-8")
+        (v1 / "player_list.json").write_text('[{"name": "Ana"}]', encoding="utf-8")
+    return local
+
+
+def test_v1_buttons_have_the_right_risk():
+    assert check_by_key("v1_detect").risk == "read"
+    assert check_by_key("v1_import").risk == "write"  # escribe configuración: la pantalla pide confirmación
+
+
+def test_v1_detect_reports_and_writes_nothing(tmp_path, monkeypatch):
+    local = v1_env(tmp_path, monkeypatch)
+    dev, clock = device(fixture_frame("main_village"))
+    out = run_check(check_by_key("v1_detect"), dev, clock=clock)
+    assert any("Ana" in line for line in out.lines) and out.ok
+    assert dev.actions == [] and not (local / "PyClash").exists()
+
+
+def test_v1_import_creates_the_accounts(tmp_path, monkeypatch):
+    from pyclash.config import ConfigStore
+
+    local = v1_env(tmp_path, monkeypatch)
+    dev, clock = device(fixture_frame("main_village"))
+    out = run_check(check_by_key("v1_import"), dev, clock=clock)
+    assert out.ok and dev.actions == []
+    ana = ConfigStore(local / "PyClash").load_profile("Ana").value
+    assert ana.upgrade.order == "cheapest" and ana.upgrade.reserve_builders == 0
+    again = run_check(check_by_key("v1_import"), dev, clock=clock)  # repetir no duplica ni pisa
+    assert again.result.outcome is Outcome.NOTHING_TO_DO
+
+
+def test_v1_import_without_data_does_nothing(tmp_path, monkeypatch):
+    local = v1_env(tmp_path, monkeypatch, with_data=False)
+    dev, clock = device(fixture_frame("main_village"))
+    out = run_check(check_by_key("v1_import"), dev, clock=clock)
+    assert out.result.outcome is Outcome.NOTHING_TO_DO and not (local / "PyClash" / "profiles").exists()

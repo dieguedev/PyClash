@@ -24,6 +24,12 @@ from ..tasks.base import Outcome
 from .verification import CHECKS, DEFAULT_CAPTURE_DIR, RISK_LABELS, Check, CheckOutcome, run_check
 
 
+_CONFIRM = {
+    "spend": ("Gasta recursos de verdad", "Esto actúa sobre tu cuenta real. ¿Continuar?"),
+    "write": ("Escribe en tu configuración", "No toca el juego, pero crea ajustes de PyClash en tu carpeta de datos. ¿Continuar?"),
+}
+
+
 class _Bridge(QObject):
     """Pasa el texto y el final del hilo de trabajo al hilo de la interfaz (las señales de Qt lo hacen solas)."""
 
@@ -82,11 +88,12 @@ class VerificationPanel(QWidget):
     def start(self, check: Check) -> None:
         if self._stop is not None:
             return
-        if check.risk == "spend":
+        if check.risk in _CONFIRM:
+            title, warning = _CONFIRM[check.risk]
             answer = QMessageBox.warning(
                 self,
-                "Gasta recursos de verdad",
-                f"«{check.label}»: {check.help}\n\nEsto actúa sobre tu cuenta real. ¿Continuar?",
+                title,
+                f"«{check.label}»: {check.help}\n\n{warning}",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
