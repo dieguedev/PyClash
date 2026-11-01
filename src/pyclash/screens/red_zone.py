@@ -19,6 +19,9 @@ Sin una masa clara (poca línea roja, o la aldea no destaca sobre lo demás) no 
 no empieza. Medido sobre capturas reales de exploración a 720-990 de alto: la aldea da 2000-9000 px y los
 trozos sueltos, menos de ~1000.
 
+El contorno PARPADEA: un solo fotograma puede coger el instante tenue y rechazar una zona válida. Para
+decidir se leen varios fotogramas y se combinan con el máximo (`read_red_zone_frames`).
+
 SOLO ES FIABLE EN LA EXPLORACIÓN. En otras pantallas (la aldea propia, una batalla ya empezada) hay muchas
 cosas rojas (tejados, tropas) y a mayor resolución el tamaño de una masa ya no distingue una aldea de un
 falso positivo. Quien la llama debe haber comprobado antes que la pantalla es la exploración.
@@ -65,14 +68,40 @@ def _hide_interface(mask: np.ndarray) -> None:
     mask[: int(0.17 * h), int(0.80 * w) :] = 0  # oro y elixir propios
 
 
-def read_red_zone(image: np.ndarray) -> RedZoneReading:
-    h, w = image.shape[:2]
+def _response(image: np.ndarray) -> np.ndarray:
+    """Cuánto resalta cada píxel como línea estrecha y rojiza (top-hat del canal «a»), sin umbral todavía."""
+    h = image.shape[0]
     scale = h / 720.0
     kernel = max(3, round(TOPHAT_KERNEL * scale)) | 1
     a = cv2.cvtColor(image, cv2.COLOR_RGB2LAB)[..., 1].astype(np.float32)
     a = cv2.GaussianBlur(a, (0, 0), 0.6 * scale)
-    tophat = cv2.morphologyEx(a, cv2.MORPH_TOPHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel, kernel)))
-    mask = (tophat >= TOPHAT_THRESHOLD).astype(np.uint8)
+    return cv2.morphologyEx(a, cv2.MORPH_TOPHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel, kernel)))
+
+
+def read_red_zone(image: np.ndarray) -> RedZoneReading:
+    """Zona roja de UN fotograma. El contorno parpadea: para decidir, usa `read_red_zone_frames`."""
+    return _analyse(_response(image), image.shape[0])
+
+
+def read_red_zone_frames(images: list[np.ndarray]) -> RedZoneReading:
+    """Zona roja de VARIOS fotogramas de la misma exploración.
+
+    El contorno rojo parpadea (se desvanece y vuelve): en un fotograma tenue casi no se ve (medido en capturas
+    reales: la pieza mayor baja a ~800 px cuando con el contorno pleno son 2000-9000 y se rechaza una zona
+    válida). Se combina la respuesta de todos los fotogramas quedándose con el MÁXIMO de cada píxel, que es
+    el contorno en su momento más intenso. Los fotogramas deben ser del mismo tamaño y sin mover la cámara.
+    """
+    if not images:
+        return RedZoneReading(None, "no hay fotogramas")
+    if len({i.shape for i in images}) != 1:
+        return RedZoneReading(None, "los fotogramas no tienen el mismo tamaño")
+    return _analyse(np.maximum.reduce([_response(i) for i in images]), images[0].shape[0])
+
+
+def _analyse(response: np.ndarray, h: int) -> RedZoneReading:
+    w = response.shape[1]
+    scale = h / 720.0
+    mask = (response >= TOPHAT_THRESHOLD).astype(np.uint8)
     _hide_interface(mask)
 
     join = max(3, round(JOIN_FRACTION * h)) | 1
@@ -106,4 +135,4 @@ def read_red_zone(image: np.ndarray) -> RedZoneReading:
     return RedZoneReading(RedZone(tuple((int(x), int(y)) for x, y in hull), center, pixels, ratio))
 
 
-__all__ = ["RedZone", "RedZoneReading", "read_red_zone"]
+__all__ = ["RedZone", "RedZoneReading", "read_red_zone", "read_red_zone_frames"]

@@ -53,3 +53,31 @@ def test_the_zone_stays_clear_of_the_interface():
     ys = [y for _, y in zone.hull]
     assert min(ys) > 0.10 * 720 and max(ys) < 0.845 * 720  # ni cuenta atrás ni barra de cartas
     assert 0 < min(xs) and max(xs) < 1280
+
+
+# --- el contorno parpadea: varios fotogramas ------------------------------------------------
+
+def _dim(image):
+    """Un instante tenue del parpadeo: el mismo fotograma con el contorno casi desvanecido."""
+    import cv2
+
+    return cv2.addWeighted(image, 0.25, cv2.GaussianBlur(image, (0, 0), 5), 0.75, 0)
+
+
+def test_un_fotograma_tenue_solo_no_basta_pero_combinado_con_uno_pleno_si():
+    from pyclash.screens.red_zone import read_red_zone, read_red_zone_frames
+
+    bright = fixture_frame("scouting_base").image
+    dim = _dim(bright)
+    assert read_red_zone(dim).zone is None  # el instante tenue, por sí solo, se rechaza
+    combined = read_red_zone_frames([dim, bright, dim])
+    assert combined.zone is not None
+    assert combined.zone.hull == read_red_zone(bright).zone.hull  # el máximo recupera el contorno pleno
+
+
+def test_varios_fotogramas_distintos_de_tamano_o_vacios_no_inventan_una_zona():
+    from pyclash.screens.red_zone import read_red_zone_frames
+
+    a = fixture_frame("scouting_base").image
+    assert read_red_zone_frames([]).zone is None
+    assert read_red_zone_frames([a, a[:-10]]).zone is None
