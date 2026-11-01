@@ -13,7 +13,7 @@ from .schema import (
     changes,
     restart_needed,
 )
-from .secrets import (
+from .credentials import (
     DISCORD_WEBHOOK,
     TELEGRAM_CHAT,
     TELEGRAM_TOKEN,

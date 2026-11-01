@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 from pyclash.config.schema import AccountProfile, AppConfig, WindowSelection
-from pyclash.config.secrets import (
+from pyclash.config.credentials import (
     DISCORD_WEBHOOK,
     MASK,
     TELEGRAM_TOKEN,
