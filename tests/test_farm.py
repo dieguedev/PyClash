@@ -53,6 +53,7 @@ class FarmDevice:
         }
         self.held = False
         self.taps, self.presses, self.moves, self.releases = [], [], [], []
+        self.press_at, self.first_move_at = None, None
         self.released_captures = 0
         self.on_move = None
 
@@ -87,12 +88,16 @@ class FarmDevice:
             raise NotImplementedError
         self.held = True
         self.presses.append((x, y))
+        self.press_at = self.clock.now()
+        self.first_move_at = None
         if self.state == "scout":
             self.state = "battle"
 
     def move(self, x, y):
         assert self.held, "move sin press"
         self.moves.append((x, y))
+        if self.first_move_at is None:
+            self.first_move_at = self.clock.now()
         if self.state == "battle" and len(self.moves) >= self.gray_after:
             self.state = "gray"
         if self.on_move:
@@ -251,3 +256,62 @@ def test_a_search_that_never_advances_is_reset_and_then_fails():
     assert result.outcome is Outcome.FAILED and "atascada" in result.reason
     assert any("se reinicia" in w.message for w in warnings)
     assert not dev.presses
+
+
+def test_the_pointer_stays_pressed_and_still_for_a_random_0_3_to_0_5_s_before_sliding():
+    """Sin esa pausa el juego toma el trazo por un arrastre del mapa y no despliega nada."""
+    from dataclasses import replace
+
+    from pyclash.tasks.farm import FarmConfig
+
+    def gap(config, seed):
+        ctx, dev = make(seed=seed)
+        run_task(FarmTask(config), ctx)
+        return dev.first_move_at - dev.press_at
+
+    none = replace(FarmConfig(), press_hold_min_s=0.0, press_hold_max_s=0.0)
+    holds = [gap(FarmConfig(), seed) - gap(none, seed) for seed in range(8)]
+    assert all(0.3 - 1e-9 <= h <= 0.5 + 1e-9 for h in holds), holds
+    assert len({round(h, 3) for h in holds}) > 1  # es aleatoria, no un valor fijo
+
+
+def _counts(*values):
+    it = iter(values)
+    last = [values[-1]]
+
+    def read(image, rect):
+        last[0] = next(it, last[0])
+        return last[0]
+
+    return read
+
+
+def test_if_troops_are_left_after_a_trace_it_does_another_until_the_card_is_exhausted():
+    ctx, dev = make(gray_after=1000, end_after=10**9)  # un trazo da ~400 movimientos: la carta solo se agota en la tercera ronda
+    task = FarmTask()
+    task.bar.read_count = _counts(*range(50, 0, -1))  # el contador baja ronda a ronda
+    run_task(task, ctx)
+    assert len(dev.presses) >= 2 and len(dev.presses) == len(dev.releases) and not dev.held
+    assert 1000 <= len(dev.moves) <= 1000 + 60  # y corta en mitad del trazo en cuanto se agota, no al final de la vuelta
+
+
+def test_a_round_that_does_not_lower_the_count_stops_instead_of_spinning_forever():
+    ctx, dev = make(gray_after=10_000)
+    task = FarmTask()
+    task.bar.read_count = _counts(50)  # nunca baja: el gesto no despliega
+    warnings = events_of(ctx, Warning)
+    run_task(task, ctx)
+    assert len(dev.presses) == 1  # una sola ronda y se para
+    assert any("no despliega" in w.message for w in warnings)
+
+
+def test_the_number_of_rounds_has_a_cap():
+    from pyclash.tasks.farm import FarmConfig
+
+    ctx, dev = make(gray_after=10_000_000)
+    task = FarmTask(FarmConfig(max_rounds=3))
+    task.bar.read_count = _counts(*range(1000, 0, -1))  # baja siempre, pero la carta nunca se agota
+    warnings = events_of(ctx, Warning)
+    run_task(task, ctx)
+    assert len(dev.presses) == 3
+    assert any("3 rondas" in w.message for w in warnings)

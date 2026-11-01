@@ -61,7 +61,7 @@ from ..screens.loot import (
     read_result_loot,
     read_search_cost,
 )
-from ..screens.red_zone import RedZone, read_red_zone
+from ..screens.red_zone import RedZone, read_red_zone_frames
 from ..screens.signatures import box
 from ..screens.troops import TroopPortraits, check_army
 from ..vision.ocr import OcrEngine
@@ -92,6 +92,14 @@ class FarmConfig:
     search_attempts: int = 2
     settle_s: float = 1.0
     select_pause_s: float = 0.4  # tras elegir la carta, antes de pulsar el terreno
+    # Con el terreno pulsado y SIN mover, al azar entre estos dos valores: sin esta pausa el juego toma el
+    # trazo por un arrastre del mapa en vez de por un despliegue.
+    # La zona roja parpadea: se leen varios fotogramas y se combinan (ver `read_red_zone_frames`).
+    max_rounds: int = 8  # trazos nuevos como máximo por carta (cada uno, 3-4 vueltas) hasta agotar las tropas
+    red_zone_frames: int = 6
+    red_zone_interval_s: float = 0.35
+    press_hold_min_s: float = 0.3
+    press_hold_max_s: float = 0.5
     check_every_s: float = 0.5  # cada cuánto se mira si la carta se agotó durante el trazo
     battle_timeout_s: float = 330.0  # 3 min de batalla más margen; no se cancela si se pasa: se avisa
     capture_dir: Path | None = None
@@ -357,11 +365,16 @@ class FarmTask:
         return "" if back is None else f" (y no se pudo salir de la búsqueda: {back.reason})"
 
     def _attack(self, ctx: Context, army: Army) -> TaskResult:
+        cfg = self.config
         image = ctx.device.capture().image
         screen = self.classifier.classify(image).screen
         if screen is not Screen.FINDING_OPPONENT:  # la zona roja solo se lee en la exploración (ver red_zone.py)
             return self._abort(ctx, image, f"se esperaba la exploración y la pantalla es «{screen.value}»: no se despliega nada")
-        reading = read_red_zone(image)
+        frames = [image]
+        for _ in range(max(0, cfg.red_zone_frames - 1)):
+            ctx.sleep(cfg.red_zone_interval_s)
+            frames.append(ctx.device.capture().image)
+        reading = read_red_zone_frames(frames)
         if reading.zone is None:
             return self._abort(ctx, image, f"no se pudo leer la zona roja: {reading.reason}")
 
@@ -409,18 +422,44 @@ class FarmTask:
             ctx.events.publish(CaptureSaved(str(path)))
 
     def _deploy(self, ctx: Context, card: Card, zone: RedZone, size: tuple[int, int], troop: str) -> TaskResult | None:
-        """Un gesto continuo alrededor de la aldea con la carta `card`. None si se desplegó (o se agotó)."""
+        """Gestos continuos alrededor de la aldea con la carta `card`, hasta agotarla. None si se desplegó.
+
+        Cada ronda es un trazo nuevo al azar (3-4 vueltas): si al acabar quedan tropas, se hace otra. Salvaguardas:
+        un máximo de rondas y, sobre todo, que el contador «xN» de la carta baje en cada ronda; si no baja, el
+        gesto no está desplegando nada (p. ej. arrastra el mapa) y seguir solo lo empeoraría.
+        """
         cfg = self.config
-        trace = make_trace(list(zone.hull), size, ctx.rng, cfg.path)
         ctx.device.tap(*card.center)
         ctx.sleep(cfg.select_pause_s)
         ctx.check_stop()
 
+        count = self.bar.read_count(ctx.device.capture().image, card.rect)
+        for round_number in range(1, cfg.max_rounds + 1):
+            trace = make_trace(list(zone.hull), size, ctx.rng, cfg.path)
+            if self._run_trace(ctx, card, trace):
+                break
+            image = ctx.device.capture().image
+            left = self.bar.read_count(image, card.rect)
+            if count is not None and left is not None and left >= count:
+                ctx.events.publish(Warning(
+                    f"tras la ronda {round_number} siguen {left} de {troop_name(troop)} (había {count}): el gesto no despliega"
+                ))
+                self._save_capture(ctx, image, "farm-no-deploy")
+                break
+            count = left
+            if round_number == cfg.max_rounds:
+                ctx.events.publish(Warning(f"tras {cfg.max_rounds} rondas todavía quedan tropas de {troop_name(troop)}"))
+        ctx.sleep(cfg.select_pause_s)
+        return None
+
+    def _run_trace(self, ctx: Context, card: Card, trace) -> bool:
+        """Un trazo: pulsar, esperar quieto, deslizar y soltar. True si la carta se agotó."""
+        cfg = self.config
         exhausted = False
-        started = ctx.clock.now()
-        next_check = started + cfg.check_every_s
+        next_check = ctx.clock.now() + cfg.check_every_s
         ctx.device.press(*trace.points[0])
         try:
+            ctx.sleep(ctx.rng.uniform(cfg.press_hold_min_s, cfg.press_hold_max_s))  # pulsación quieta antes de deslizar
             for point, wait in zip(trace.points[1:], trace.waits[1:]):
                 ctx.sleep(wait, step=wait)  # comprueba la parada en cada punto
                 ctx.device.move(*point)
@@ -432,12 +471,7 @@ class FarmTask:
         finally:
             if ctx.device.held:
                 ctx.device.release()
-        if not exhausted:
-            exhausted = self.bar.is_exhausted(ctx.device.capture().image, card.rect)
-        if not exhausted:
-            ctx.events.publish(Warning(f"tras las {trace.laps} vueltas todavía quedan tropas de {troop_name(troop)}"))
-        ctx.sleep(cfg.select_pause_s)
-        return None
+        return exhausted or self.bar.is_exhausted(ctx.device.capture().image, card.rect)
 
     def _wait_end(self, ctx: Context) -> TaskResult:
         """El juego termina la batalla; aquí solo se espera y se vuelve a la aldea por la pantalla de resultado."""
