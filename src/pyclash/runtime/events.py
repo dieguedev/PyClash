@@ -43,6 +43,25 @@ class UpgradePlanned(Event):
 
 
 @dataclass(frozen=True)
+class WallBatchPlanned(Event):
+    """Muros por lotes: lo que se va a mejorar y por qué (en modo de prueba, lo que se habría hecho)."""
+
+    resource: str
+    count: int
+    unit_cost: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class WallBatchStep(Event):
+    """Un paso del lote (traza de diagnóstico): botón pulsado, contador leído, etc."""
+
+    action: str
+    count: int | None = None
+    detail: str = ""
+
+
+@dataclass(frozen=True)
 class LootObtained(Event):
     resources: dict[str, int]
 

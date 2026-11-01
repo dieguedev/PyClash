@@ -65,7 +65,8 @@ class PanelTask:
         if not ctx.wait_until(opened, self.config.open_timeout_s, 0.5):
             return TaskResult.needs_recovery(f"el menú «{menu.name}» no se abrió")
         self._after_open(ctx)
-        return list(self.scanner.scan(ctx).rows)
+        self.last_scan = self.scanner.scan(ctx)  # la tarea puede mirar si el panel se recorrió entero
+        return list(self.last_scan.rows)
 
     def _after_open(self, ctx: Context) -> None:
         """Gancho: lo que una tarea quiera hacer con el panel recién abierto, antes de leer las filas."""
