@@ -1,12 +1,5 @@
 # Avisos de terceros
 
-## Proyectos
-
-PyClash es una implementación inspirada en las ideas de los siguientes proyectos de licencia MIT:
-
-[CoC_Bot](https://github.com/m24842/CoC_Bot)
-[PixelChief](https://github.com/Leixien/pixelchief)
-
 ## Dependencias principales
 
 | Componente | Licencia |
@@ -24,7 +17,7 @@ PyClash es una implementación inspirada en las ideas de los siguientes proyecto
 
 `src/pyclash/assets/fonts/SupercellMagic.ttf` es la fuente que usa Clash of Clans. Se incluye para
 renderizar texto y dígitos y buscarlos por plantilla; sus derechos pertenecen a sus titulares
-(Supercell). Se tomó de los recursos del repositorio CoC_Bot.
+(Supercell).
 
 ## Retratos de tropas
 
