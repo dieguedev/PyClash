@@ -113,6 +113,15 @@ def test_card_tap_check_taps_once_and_never_holds_or_swipes(tmp_path):
     assert len(list(tmp_path.glob("card-*.png"))) == 2  # antes y después
 
 
+def test_zoom_out_check_is_a_dry_run_that_never_spends(tmp_path):
+    assert check_by_key("zoom_out").risk == "dry"
+    dev, clock = device(fixture_frame("main_village"))
+    out = run_check(check_by_key("zoom_out"), dev, clock=clock, capture_dir=tmp_path)
+    assert out.ok
+    assert {a.kind for a in dev.actions} <= {"tap", "scroll"}
+    assert len(list(tmp_path.glob("zoom-final-*.png"))) == 1
+
+
 def test_inactivity_check_reads_the_popup_without_tapping():
     dev, clock = device(fixture_frame("inactivity_popup"))
     out = run_check(check_by_key("inactivity"), dev, clock=clock)

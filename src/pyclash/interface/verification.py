@@ -42,6 +42,7 @@ from ..tasks.farm import FarmConfig, FarmTask
 from ..tasks.panel import PanelTask
 from ..tasks.upgrade import UpgradeConfig, UpgradeTask
 from ..tasks.walls import WallBatchTask, WallConfig, WallInputs
+from ..tasks.zoom import ZoomOut, ZoomOutConfig
 from ..vision.base import MetadataVision
 
 Risk = Literal["read", "dry", "spend"]
@@ -315,6 +316,15 @@ def _farm(ctx: Context, directory: Path) -> CheckOutcome:
     return _run_task(FarmTask(FarmConfig(capture_dir=directory)), ctx)
 
 
+def _zoom_out(ctx: Context, directory: Path) -> CheckOutcome:
+    """Cierra el menú abierto con su X, aleja al máximo y guarda la captura final para verla. No gasta."""
+    out = _run_task(ZoomOut(ZoomOutConfig(capture_dir=directory)), ctx)
+    if out.result is not None and out.result.outcome is Outcome.DONE:
+        path = save_frame(ctx.device.capture().image, directory, "zoom-final")
+        out.lines.append(f"Captura final guardada en {path}")
+    return out
+
+
 CHECKS: tuple[Check, ...] = (
     Check("screen", "¿Qué pantalla ve?", "read", "Clasifica la captura actual y explica qué indicador falla.", _check_screen),
     Check("inactivity", "¿Ve el aviso de inactividad?", "read", "Con «Anyone there?» en pantalla: si lo reconoce y dónde pulsaría «RELOAD GAME». No pulsa.", _check_inactivity),
@@ -323,6 +333,7 @@ CHECKS: tuple[Check, ...] = (
     Check("bar", "Leer barra de despliegue", "read", "En una batalla: cartas, contadores y cuáles están agotadas.", _check_bar),
     Check("red_zone", "Leer zona roja (varios fotogramas)", "read", "En la exploración: cuánto se ve el contorno rojo en cada fotograma y combinado.", _check_red_zone),
     Check("card_tap", "Probar pulsar la carta (no despliega)", "dry", "Pulsa la primera carta de la barra y mide si cambia; guarda antes y después.", _check_card_tap),
+    Check("zoom_out", "Zoom-out máximo de la aldea", "dry", "Cierra el menú abierto con su X (si lo hay), gira la rueda hasta el tope y guarda la captura final. No gasta.", _zoom_out),
     Check("capture", "Guardar captura", "read", "Guarda la pantalla actual en captures_raw/ (ignorado por git).", _check_capture),
     Check("panel", "Leer panel Buildings & Heroes", "dry", "Abre el panel, lista las filas con coste y color, y lo cierra.", _check_panel),
     Check("upgrade_dry", "Mejora (Dry run)", "dry", "Decide qué mejoraría y lo registra; no pulsa ninguna fila.", _upgrade(Mode.DRY_RUN)),
