@@ -1,7 +1,7 @@
 """Barra de despliegue de la batalla: localiza las cartas por bordes, lee su contador «xN» y dice si una
 carta está agotada. Sin plantillas por tropa (la identidad de cada tropa la da `troops.py`).
 
-Idea de CoC_Bot (`detect_troop_positions`): los bordes verticales de las cartas dan un perfil de
+Los bordes verticales de las cartas dan un perfil de
 gradiente con picos en los cantos, y las distancias entre picos distinguen «ancho de carta», «hueco
 normal» y «hueco de cambio de tipo». Aquí el perfil es la **fracción de filas** de la banda donde hay
 gradiente horizontal: el canto de una carta es continuo de arriba abajo (≈1.0) y el contorno punteado de
@@ -12,9 +12,9 @@ hueco normal ≈0.006. Una carta agotada (gris, «x0») conserva sus cantos pero
 umbral de gradiente es bajo y la exigencia de continuidad alta.
 
 PROVISIONAL (sin capturas reales): la clasificación de hechizo / héroe / clan. Solo hay barras con tropas.
-Se basa en las reglas de CoC_Bot: un contador «xN» marca tropa, hechizo o clan; no tenerlo, héroe; un hueco
+Reglas: un contador «xN» marca tropa, hechizo o clan; no tenerlo, héroe; un hueco
 mayor que el normal separa los grupos (tropas | hechizos | clan); una carta aislada entre dos huecos
-grandes es de clan. Desplegar héroes, hechizos y clan es de la issue #31.
+grandes es de clan. Desplegar héroes, hechizos y clan queda fuera del MVP.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ GRADIENT_MIN = 12.0  # gradiente horizontal (0..255) por encima del cual cuenta 
 COVERAGE_MIN = 0.8  # fracción de la banda con borde para que una columna sea un canto
 MIN_CARD_W = 0.045  # fracciones del ancho del fotograma
 MAX_CARD_W = 0.072
-TYPE_GAP = 0.011  # un hueco mayor separa grupos de cartas (CoC_Bot: 0.007 normal, 0.015 de cambio)
+TYPE_GAP = 0.011  # un hueco mayor separa grupos de cartas
 OVERFLOW_X = 0.93  # una carta que llega más allá de aquí hace pensar que la barra continúa
 COUNT_PX = 30  # tamaño de fuente del contador a BASE_HEIGHT
 COUNT_COLORS = ((255, 255, 255), (170, 170, 170))
@@ -152,7 +152,7 @@ class BarReader:
         for i, rect in enumerate(rects):
             if i > 0 and wide[i - 1]:
                 groups += 1
-            isolated = 0 < i < len(rects) - 1 and wide[i - 1] and wide[i]  # entre dos huecos grandes (regla de CoC_Bot)
+            isolated = 0 < i < len(rects) - 1 and wide[i - 1] and wide[i]  # entre dos huecos grandes
             if counts[i] is None:
                 kind: CardKind = "hero"
             elif isolated and groups > 0:

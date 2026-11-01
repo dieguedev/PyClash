@@ -2,8 +2,7 @@
 
 Medida sobre capturas reales de la ventana de Google Play Games de la aldea principal. Los demás
 perfiles (laboratorio, mascotas, Builder Base) son copias PROVISIONALES: su estructura de fila se
-supone igual hasta tener una captura de cada uno (la de mascotas parte más a la derecha, según la
-referencia de CoC_Bot).
+supone igual hasta tener una captura de cada uno (la de mascotas parte más a la derecha).
 """
 
 from __future__ import annotations

@@ -26,7 +26,6 @@ from .verification import CHECKS, DEFAULT_CAPTURE_DIR, RISK_LABELS, Check, Check
 
 _CONFIRM = {
     "spend": ("Gasta recursos de verdad", "Esto actúa sobre tu cuenta real. ¿Continuar?"),
-    "write": ("Escribe en tu configuración", "No toca el juego, pero crea ajustes de PyClash en tu carpeta de datos. ¿Continuar?"),
 }
 
 

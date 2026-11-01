@@ -26,10 +26,6 @@ EXCLUSIONS = (EXCLUDE_HEROES,)
 RESERVE_RANGE = (0, 5)
 CAP_RANGE = (1, 99)
 
-EARTHQUAKE_METHODS = ("Curve Placement", "Random Placement")
-WALL_THRESHOLD_RANGE = (0, 20)
-MINUTES_RANGE = (0, 999)
-LOOT_RANGE = (0, 9_999_999)
 
 
 # ---------------------------------------------------------------- problemas
@@ -180,26 +176,10 @@ class UpgradeProfile:
 
 
 @dataclass(frozen=True)
-class V1Pending:
-    """Ajustes de la v1 que PyClash aún no usa (ataque y muros). Se conservan para cuando se construyan."""
-
-    earthquake_method: str = EARTHQUAKE_METHODS[0]
-    wall_upgrade_threshold_m: int = 3
-    random_minutes_min: int = 0
-    random_minutes_max: int = 0
-    repeat_pause_min: int = 0
-    repeat_pause_max: int = 0
-    min_loot_gold: int = 0
-    min_loot_elixir: int = 0
-    min_loot_dark: int = 0
-
-
-@dataclass(frozen=True)
 class AccountProfile:
     name: str
     enabled: bool = True
     upgrade: UpgradeProfile = UpgradeProfile()
-    from_v1: V1Pending = V1Pending()
 
 
 @dataclass(frozen=True)
@@ -237,33 +217,6 @@ def _parse_upgrade(raw: Any, problems: list[ConfigProblem]) -> UpgradeProfile:
     )
 
 
-def _range_pair(r: _Reader, lo_key: str, hi_key: str) -> tuple[int, int]:
-    low = r.int(lo_key, 0, *MINUTES_RANGE)
-    high = r.int(hi_key, 0, *MINUTES_RANGE)
-    if low > 0 and high < low:
-        r.problem(hi_key, f"no puede ser menor que {lo_key} ({low}); se usa {low}")
-        high = low
-    return low, high
-
-
-def _parse_v1(raw: Any, problems: list[ConfigProblem]) -> V1Pending:
-    r = _Reader(raw, "from_v1", problems)
-    d = V1Pending()
-    rand_min, rand_max = _range_pair(r, "random_minutes_min", "random_minutes_max")
-    pause_min, pause_max = _range_pair(r, "repeat_pause_min", "repeat_pause_max")
-    return V1Pending(
-        earthquake_method=r.choice("earthquake_method", d.earthquake_method, EARTHQUAKE_METHODS),
-        wall_upgrade_threshold_m=r.int("wall_upgrade_threshold_m", d.wall_upgrade_threshold_m, *WALL_THRESHOLD_RANGE),
-        random_minutes_min=rand_min,
-        random_minutes_max=rand_max,
-        repeat_pause_min=pause_min,
-        repeat_pause_max=pause_max,
-        min_loot_gold=r.int("min_loot_gold", 0, *LOOT_RANGE),
-        min_loot_elixir=r.int("min_loot_elixir", 0, *LOOT_RANGE),
-        min_loot_dark=r.int("min_loot_dark", 0, *LOOT_RANGE),
-    )
-
-
 def parse_profile(raw: Any, name_hint: str = "") -> tuple[AccountProfile, list[ConfigProblem]]:
     problems: list[ConfigProblem] = []
     r = _Reader(raw, "", problems)
@@ -276,7 +229,6 @@ def parse_profile(raw: Any, name_hint: str = "") -> tuple[AccountProfile, list[C
         name=name,
         enabled=r.boolean("enabled", True),
         upgrade=_parse_upgrade(r.raw.get("upgrade"), problems),
-        from_v1=_parse_v1(r.raw.get("from_v1"), problems),
     )
     return profile, problems
 
@@ -388,7 +340,6 @@ SETTING_APPLIES: dict[str, str] = {
     "active_profile": RESTART,
     "enabled": RESTART,
     "name": RESTART,
-    "from_v1": RESTART,
 }
 
 

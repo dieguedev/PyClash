@@ -45,10 +45,6 @@ def only(problems):
         ("upgrade.priorities", {"upgrade": {"priorities": "Cannon"}}, "lista"),
         ("upgrade.priorities[0]", {"upgrade": {"priorities": ["Cannon"]}}, "lista de nombres"),
         ("enabled", {"enabled": "si"}, "verdadero o falso"),
-        ("from_v1.wall_upgrade_threshold_m", {"from_v1": {"wall_upgrade_threshold_m": 21}}, "entre 0 y 20"),
-        ("from_v1.min_loot_gold", {"from_v1": {"min_loot_gold": -1}}, "entre 0 y 9999999"),
-        ("from_v1.earthquake_method", {"from_v1": {"earthquake_method": "Boom"}}, "Curve Placement"),
-        ("from_v1.random_minutes_max", {"from_v1": {"random_minutes_min": 10, "random_minutes_max": 5}}, "menor"),
         ("upgrade", {"upgrade": 7}, "objeto"),
     ],
 )
@@ -149,7 +145,6 @@ def test_current_files_carry_the_schema_version():
         ("upgrade.excluded", LIVE),
         ("upgrade.mode", RESTART),
         ("window.title", RESTART),
-        ("from_v1.min_loot_gold", RESTART),
         ("campo.desconocido", RESTART),  # lo no registrado espera: es lo seguro
     ],
 )

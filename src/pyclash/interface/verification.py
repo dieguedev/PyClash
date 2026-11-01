@@ -23,9 +23,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
-from ..config import ConfigStore, detect_v1, import_v1
 from ..device.base import Device, DeviceError
-from ..paths import user_data_dir
 from ..policy.build_new import BuildSettings
 from ..policy.upgrades import Mode, UpgradeSettings
 from ..runtime.clock import Clock, SystemClock
@@ -46,12 +44,11 @@ from ..tasks.upgrade import UpgradeConfig, UpgradeTask
 from ..tasks.walls import WallBatchTask, WallConfig, WallInputs
 from ..vision.base import MetadataVision
 
-Risk = Literal["read", "dry", "write", "spend"]
+Risk = Literal["read", "dry", "spend"]
 
 RISK_LABELS = {
     "read": "Solo leer (no pulsa nada)",
     "dry": "Simulacro (abre y cierra menús, no gasta)",
-    "write": "Escribe en tu configuración (pide confirmación)",
     "spend": "Con gasto real (pide confirmación)",
 }
 DEFAULT_CAPTURE_DIR = Path("captures_raw")  # ignorado por git: las capturas llevan datos personales
@@ -314,24 +311,6 @@ def _build(dry_run: bool) -> Callable[[Context, Path], CheckOutcome]:
     return run
 
 
-def _v1_detect(_ctx: Context, _dir: Path) -> CheckOutcome:
-    report = detect_v1()
-    lines = report.describe()
-    if report.has_data:
-        lines.append("No se ha importado nada: para hacerlo, usa «Importar datos de la v1».")
-    return CheckOutcome(lines)
-
-
-def _v1_import(_ctx: Context, _dir: Path) -> CheckOutcome:
-    report = detect_v1()
-    if not report.has_data:
-        return CheckOutcome(report.describe(), TaskResult.nothing_to_do("no hay datos de la v1"))
-    store = ConfigStore(user_data_dir())
-    result = import_v1(report, store)
-    lines = report.describe() + ["— Importado en " + str(store.directory)] + result.describe()
-    return CheckOutcome(lines, TaskResult.done() if result.created or result.window_imported else TaskResult.nothing_to_do("ya estaba importado"))
-
-
 def _farm(ctx: Context, directory: Path) -> CheckOutcome:
     return _run_task(FarmTask(FarmConfig(capture_dir=directory)), ctx)
 
@@ -349,8 +328,6 @@ CHECKS: tuple[Check, ...] = (
     Check("upgrade_dry", "Mejora (Dry run)", "dry", "Decide qué mejoraría y lo registra; no pulsa ninguna fila.", _upgrade(Mode.DRY_RUN)),
     Check("walls_dry", "Muros (Dry run)", "dry", "Calcula el lote de muros y lo registra; no lo arma.", _walls(True)),
     Check("build_dry", "Construir (Dry run)", "dry", "Decide qué edificio nuevo compraría; no lo coloca.", _build(True)),
-    Check("v1_detect", "Detectar datos de la v1", "read", "Mira la carpeta de datos de PixelChief (en %LOCALAPPDATA%) y dice qué se importaría; no escribe nada.", _v1_detect),
-    Check("v1_import", "Importar datos de la v1", "write", "Copia ajustes, jugadores y ventana de PixelChief v1 a la configuración de PyClash; no pisa lo que ya exista.", _v1_import),
     Check("upgrade", "Mejorar (REAL)", "spend", "Inicia mejoras de verdad (modo Maxer): gasta oro/elixir.", _upgrade(Mode.MAXER)),
     Check("walls", "Muros (REAL)", "spend", "Arma y confirma un lote de muros: gasta elixir.", _walls(False)),
     Check("build", "Construir (REAL)", "spend", "Compra y coloca edificios nuevos: gasta recursos.", _build(False)),
