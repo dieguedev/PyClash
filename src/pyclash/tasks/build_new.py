@@ -64,6 +64,7 @@ class _Attempt:
 
 class BuildNewTask(PanelTask):
     name = "build_new"
+    priority = 10
     cooldown_prefix = "build"
     capture_prefix = "build"
 
@@ -95,7 +96,7 @@ class BuildNewTask(PanelTask):
             village = self.village.read_state_stable(ctx)
             free = village.free_builders if "builders" not in village.unreliable else None
             resources = village.resources if "resources" not in village.unreliable else None
-            gate = build_gate(free, settings.reserve_builders)
+            gate = build_gate(free, self._reserve(ctx))
             if gate:  # R3: ni se abre el panel
                 last_reason = gate
                 break
@@ -115,6 +116,7 @@ class BuildNewTask(PanelTask):
                 return back or TaskResult(Outcome.DONE, f"dry run: {decision.reason}")
 
             attempts += 1
+            ctx.progress()
             result = self._attempt(ctx, decision, free)
             if result.kind == "blocked":
                 return TaskResult.blocked(result.reason)
