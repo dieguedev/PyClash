@@ -32,17 +32,18 @@ def paste(img, patch, x, y):
     img[y:y + h, x:x + w][ink] = patch[ink]
 
 
-def put_chip(img, roi, text):
-    r = roi.rect(img)
-    paste(img, render_text(text, scaled_font_px(img, DEFAULT_LAYOUT.chip_font_px)), r.x + 4, r.y + 4)
+def put_chip(img, strip, text, slot=0):
+    """Un chip en la franja: los chips se colocan de izquierda a derecha, con un hueco entre ellos."""
+    r = strip.rect(img)
+    size = scaled_font_px(img, DEFAULT_LAYOUT.chip_font_px)
+    paste(img, render_text(text, size), r.x + 4 + slot * size * 4, r.y + 4)
 
 
-def put_hud(img, values):
-    hud = DEFAULT_LAYOUT.hud.rect(img)
-    band = hud.h // 3
+def put_hud(img, gold, elixir):
     size = scaled_font_px(img, DEFAULT_LAYOUT.hud_font_px)
-    for i, v in enumerate(values):
-        paste(img, render_text(str(v), size), hud.x + 20, hud.y + i * band + 8)
+    for roi, value in ((DEFAULT_LAYOUT.gold_bar, gold), (DEFAULT_LAYOUT.elixir_bar, elixir)):
+        r = roi.rect(img)
+        paste(img, render_text(str(value), size), r.x + 20, r.y + 8)
 
 
 def as_frame(img):
@@ -76,7 +77,7 @@ def test_parse_fraction(text, max_total, expected):
 
 def test_e1r3_todos_los_constructores_ocupados():
     img = screen()
-    put_chip(img, DEFAULT_LAYOUT.builder_chip, "0/5")
+    put_chip(img, DEFAULT_LAYOUT.chip_strip, "0/5")
     reader = VillageReader()
     assert reader.read_builders(img) == (0, 5)
     assert reader.read_state(img).free_builders == 0
@@ -85,8 +86,9 @@ def test_e1r3_todos_los_constructores_ocupados():
 def test_e2r3_laboratorio_libre_y_ocupado():
     reader = VillageReader()
     libre, ocupado = screen(), screen()
-    put_chip(libre, DEFAULT_LAYOUT.lab_chip, "1/1")
-    put_chip(ocupado, DEFAULT_LAYOUT.lab_chip, "0/1")
+    for img, lab in ((libre, "1/1"), (ocupado, "0/1")):
+        put_chip(img, DEFAULT_LAYOUT.chip_strip, "2/5")
+        put_chip(img, DEFAULT_LAYOUT.chip_strip, lab, slot=1)
     assert reader.read_state(libre).lab_idle
     assert not reader.read_state(ocupado).lab_idle
 
@@ -99,23 +101,23 @@ def test_sin_indicador_es_none_y_no_cuenta_como_laboratorio_libre():
 
 def test_chip_con_total_imposible_se_rechaza():
     img = screen()
-    put_chip(img, DEFAULT_LAYOUT.builder_chip, "8/8")  # un diálogo filtrando dígitos
+    put_chip(img, DEFAULT_LAYOUT.chip_strip, "8/8")  # un diálogo filtrando dígitos
     assert VillageReader().read_builders(img) is None
 
 
 def test_constructores_del_builder_base_tienen_otro_maximo():
     img = screen()
-    put_chip(img, DEFAULT_LAYOUT.builder_base_chip, "1/2")
+    put_chip(img, DEFAULT_LAYOUT.builder_base_strip, "1/2")
     assert VillageReader().read_builders(img, base="builder") == (1, 2)
     img2 = screen()
-    put_chip(img2, DEFAULT_LAYOUT.builder_base_chip, "3/5")
+    put_chip(img2, DEFAULT_LAYOUT.builder_base_strip, "3/5")
     assert VillageReader().read_builders(img2, base="builder") is None
 
 
 def test_recursos_del_hud():
     img = screen()
-    put_hud(img, [1234567, 89000, 4210])
-    assert VillageReader().read_resources(img) == (1234567, 89000, 4210)
+    put_hud(img, 1234567, 89000)
+    assert VillageReader().read_resources(img) == (1234567, 89000, None)  # el oscuro no se lee por posición
 
 
 def test_almacen_lleno_solo_con_icono_del_color_correcto():
@@ -143,7 +145,7 @@ def test_e1r1_lecturas_coherentes_entregan_2_de_5():
     imgs = []
     for _ in range(3):
         img = screen()
-        put_chip(img, DEFAULT_LAYOUT.builder_chip, "2/5")
+        put_chip(img, DEFAULT_LAYOUT.chip_strip, "2/5")
         imgs.append(img)
     ctx = make_ctx([blank_frame()])
     state = VillageReader().read_state_stable(ctx, sequence(imgs))
@@ -153,8 +155,8 @@ def test_e1r1_lecturas_coherentes_entregan_2_de_5():
 
 def test_e2r1_una_lectura_contradictoria_se_descarta_y_se_vuelve_a_leer():
     good, bad = screen(), screen()
-    put_chip(good, DEFAULT_LAYOUT.builder_chip, "2/5")
-    put_chip(bad, DEFAULT_LAYOUT.builder_chip, "6/6")
+    put_chip(good, DEFAULT_LAYOUT.chip_strip, "2/5")
+    put_chip(bad, DEFAULT_LAYOUT.chip_strip, "6/6")
     ctx = make_ctx([blank_frame()])
     state = VillageReader().read_state_stable(ctx, sequence([good, good, bad, good, good, good]))
     assert state.builders == (2, 5)
@@ -162,8 +164,8 @@ def test_e2r1_una_lectura_contradictoria_se_descarta_y_se_vuelve_a_leer():
 
 def test_e2r1_sin_acuerdo_el_estado_no_es_fiable():
     a, b = screen(), screen()
-    put_chip(a, DEFAULT_LAYOUT.builder_chip, "2/5")
-    put_chip(b, DEFAULT_LAYOUT.builder_chip, "3/5")
+    put_chip(a, DEFAULT_LAYOUT.chip_strip, "2/5")
+    put_chip(b, DEFAULT_LAYOUT.chip_strip, "3/5")
     ctx = make_ctx([blank_frame()])
     state = VillageReader().read_state_stable(ctx, sequence([a, b, a, b, a, b]))
     assert state.builders is None
@@ -172,7 +174,7 @@ def test_e2r1_sin_acuerdo_el_estado_no_es_fiable():
 
 def test_cada_campo_se_asienta_por_separado():
     img = screen()
-    put_chip(img, DEFAULT_LAYOUT.builder_chip, "2/5")  # sin chip de laboratorio
+    put_chip(img, DEFAULT_LAYOUT.chip_strip, "2/5")  # sin chip de laboratorio
     state = VillageReader().read_state_stable(make_ctx([blank_frame()]), sequence([img] * 6))
     assert state.builders == (2, 5)
     assert state.unreliable == {"lab", "resources"}  # los almacenes sin icono no se esperan
@@ -207,3 +209,15 @@ def test_stable_respeta_la_parada():
 def test_stable_valida_parametros():
     with pytest.raises(ValueError):
         stable_read(make_ctx([blank_frame()]), lambda f: 1, lambda: blank_frame(), required=3, attempts=2)
+
+
+# --- sobre una captura real (anonimizada), no sintética -------------------------------------
+
+def test_aldea_real_1280x720_se_lee_con_el_layout_calibrado():
+    from helpers import fixture_frame
+
+    image = fixture_frame("main_village").image
+    reader = VillageReader()
+    assert reader.read_builders(image) == (2, 2)
+    assert reader.read_lab(image) is None  # esa cuenta solo tiene el chip de constructores
+    assert reader.read_resources(image) == (3354, 10740, None)

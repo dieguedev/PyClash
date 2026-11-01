@@ -15,14 +15,14 @@ import numpy as np
 from ..device.base import Frame, Rect
 from ..runtime.context import Context
 from ..vision.color import RGB, color_fraction
-from ..vision.result import crop
+from ..vision.result import Reading, crop
 from ..vision.templates import TemplateMatcher
 from ..vision.text import DIGITS, DigitReader
 from .layout import DEFAULT_LAYOUT, HomeLayout, RoiFraction, scaled_font_px
 from .stable import stable_fields
 
 Fraction = tuple[int, int]  # (libres, total)
-Resources = tuple[int, int, int]  # (oro, elixir, elixir oscuro)
+Resources = tuple[int, int, int | None]  # (oro, elixir, elixir oscuro); el oscuro aún no se lee (None)
 RESOURCES = ("gold", "elixir")  # el elixir oscuro no tiene icono de almacén lleno
 
 
@@ -92,32 +92,45 @@ class VillageReader:
         self.matcher = matcher or TemplateMatcher()
         self.storage_icons = dict(storage_icons or {})
 
-    def _chip(self, image: np.ndarray, roi: RoiFraction, max_total: int) -> Fraction | None:
-        size = scaled_font_px(image, self.layout.chip_font_px)
-        r = self.digits.read(image, size, region=roi.rect(image), alphabet=DIGITS + "/")
-        return parse_fraction(r.value, max_total) if r is not None else None
+    def _best(self, image: np.ndarray, base_px: int, region: Rect, alphabet: str) -> list[Reading[str]]:
+        """Lecturas por grupos con el tamaño de fuente que mejor casa (el tamaño exacto varía ±1)."""
+        size = scaled_font_px(image, base_px)
+        best: list[Reading[str]] = []
+        best_score = (0, 0.0)
+        for s in (size - 1, size, size + 1):
+            if s < 6:
+                continue
+            groups = self.digits.read_groups(image, s, region=region, alphabet=alphabet)
+            glyphs = sum(len(g.value) for g in groups)
+            # Un tamaño equivocado lee de menos (se salta glifos): gana el que lee más; a igualdad, el más seguro.
+            score = (glyphs, sum(g.confidence * len(g.value) for g in groups) / glyphs if glyphs else 0.0)
+            if glyphs and score > best_score:
+                best, best_score = groups, score
+        return best
+
+    def _chips(self, image: np.ndarray, strip: RoiFraction) -> list[str]:
+        return [g.value for g in self._best(image, self.layout.chip_font_px, strip.rect(image), DIGITS + "/")]
 
     def read_builders(self, image: np.ndarray, base: Literal["home", "builder"] = "home") -> Fraction | None:
-        if base == "home":
-            return self._chip(image, self.layout.builder_chip, self.layout.max_home_builders)
-        return self._chip(image, self.layout.builder_base_chip, self.layout.max_builder_base_builders)
+        """El primer chip de la franja (el de más a la izquierda)."""
+        home = base == "home"
+        chips = self._chips(image, self.layout.chip_strip if home else self.layout.builder_base_strip)
+        maximum = self.layout.max_home_builders if home else self.layout.max_builder_base_builders
+        return parse_fraction(chips[0], maximum) if chips else None
 
     def read_lab(self, image: np.ndarray) -> Fraction | None:
-        return self._chip(image, self.layout.lab_chip, self.layout.max_lab_slots)
+        """El segundo chip de la franja; sin él (cuentas con un solo chip), None."""
+        chips = self._chips(image, self.layout.chip_strip)
+        return parse_fraction(chips[1], self.layout.max_lab_slots) if len(chips) > 1 else None
+
+    def _amount(self, image: np.ndarray, roi: RoiFraction) -> int | None:
+        groups = self._best(image, self.layout.hud_font_px, roi.rect(image), DIGITS)
+        return int("".join(g.value for g in groups)) if groups else None
 
     def read_resources(self, image: np.ndarray) -> Resources | None:
-        """Oro, elixir y elixir oscuro del HUD: tres filas apiladas, cada una leída por separado."""
-        hud = self.layout.hud.rect(image)
-        size = scaled_font_px(image, self.layout.hud_font_px)
-        band = hud.h // 3
-        values = []
-        for i in range(3):
-            row = Rect(hud.x, hud.y + i * band, hud.w, band)
-            r = self.digits.read(image, size, region=row)
-            if r is None:
-                return None
-            values.append(int(r.value))
-        return (values[0], values[1], values[2])
+        """Oro y elixir del HUD, cada uno de su barra. El elixir oscuro no se lee por posición (None)."""
+        gold, elixir = self._amount(image, self.layout.gold_bar), self._amount(image, self.layout.elixir_bar)
+        return None if gold is None or elixir is None else (gold, elixir, None)
 
     def storage_full(self, image: np.ndarray, resource: str) -> bool | None:
         """True/False según el icono de almacén lleno; None si no hay icono configurado."""

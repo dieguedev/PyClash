@@ -128,20 +128,14 @@ class DigitReader:
         self.matcher = matcher or TemplateMatcher()
         self.threshold = threshold
 
-    def read(
-        self,
-        image: np.ndarray,
-        size: int,
-        color: str | RGB = "white",
-        region: Rect | None = None,
-        alphabet: str = DIGITS,
-    ) -> Reading[str] | None:
-        """Cadena de glifos de `alphabet` (por defecto 0–9) de la región; `confidence` es la del
-        peor glifo. None si no hay ninguno. Añadir «/» sirve para leer fracciones como «2/5»."""
+    def _glyphs(
+        self, image: np.ndarray, size: int, color: str | RGB, region: Rect | None, alphabet: str
+    ) -> tuple[list[Match], Rect | None]:
+        """Glifos aceptados de la región, de izquierda a derecha, y la región efectiva."""
         rgb = TEXT_COLORS[color] if isinstance(color, str) else color
         section, eff = crop(image, region)
         if section.size == 0:
-            return None
+            return [], eff
         candidates: list[Match] = []
         for d in alphabet:
             candidates += self.matcher.find_all(
@@ -153,11 +147,47 @@ class DigitReader:
         for m in sorted(candidates, key=lambda c: c.confidence, reverse=True):
             if all(_x_overlap(m.rect, a.rect) <= 0.5 for a in accepted):
                 accepted.append(m)
+        accepted.sort(key=lambda m: m.rect.x)
+        return accepted, eff
+
+    def read(
+        self,
+        image: np.ndarray,
+        size: int,
+        color: str | RGB = "white",
+        region: Rect | None = None,
+        alphabet: str = DIGITS,
+    ) -> Reading[str] | None:
+        """Cadena de glifos de `alphabet` (por defecto 0–9) de la región; `confidence` es la del
+        peor glifo. None si no hay ninguno. Añadir «/» sirve para leer fracciones como «2/5»."""
+        accepted, eff = self._glyphs(image, size, color, region, alphabet)
         if not accepted:
             return None
-        accepted.sort(key=lambda m: m.rect.x)
         value = "".join(m.label or "" for m in accepted)
         return Reading(value, min(m.confidence for m in accepted), Provenance(eff, f"digits:font:s{size}"))
+
+    def read_groups(
+        self,
+        image: np.ndarray,
+        size: int,
+        color: str | RGB = "white",
+        region: Rect | None = None,
+        alphabet: str = DIGITS,
+        gap: float = 0.6,
+    ) -> list[Reading[str]]:
+        """Como `read`, pero separa los grupos de glifos que distan más de `gap` × `size` píxeles
+        (varios chips en una misma franja). De izquierda a derecha."""
+        accepted, eff = self._glyphs(image, size, color, region, alphabet)
+        groups: list[list[Match]] = []
+        for m in accepted:
+            if groups and m.rect.x - (groups[-1][-1].rect.x + groups[-1][-1].rect.w) <= gap * size:
+                groups[-1].append(m)
+            else:
+                groups.append([m])
+        return [
+            Reading("".join(m.label or "" for m in g), min(m.confidence for m in g), Provenance(eff, f"digits:font:s{size}"))
+            for g in groups
+        ]
 
 
 def _x_overlap(a: Rect, b: Rect) -> float:
