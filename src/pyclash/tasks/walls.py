@@ -184,7 +184,10 @@ class WallBatchTask(PanelTask):
 
     def _build_and_confirm(self, ctx: Context, row: PanelRow, target: int, resource: str) -> _Batch:
         ctx.check_stop()
-        ctx.device.tap(*row.center)
+        seen = self._reveal(ctx, row)
+        if seen is None:
+            return self._abort(ctx, "la fila de muros ya no se ve en el panel")
+        ctx.device.tap(*seen.center)
         ctx.events.publish(WallBatchStep("select_row"))
         ctx.sleep(self.config.settle_s)
         image = ctx.device.capture().image

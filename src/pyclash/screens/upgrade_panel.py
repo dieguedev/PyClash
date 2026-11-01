@@ -446,6 +446,54 @@ class PanelScanner:
         ok, reason = (None, "") if expect_order is None else verify_order(rows, expect_order)
         return PanelScan(rows, steps, reached_end, ok, reason)
 
+    def reveal(
+        self,
+        ctx: Context,
+        target: PanelRow,
+        max_steps: int = 30,
+        settle: float = 0.4,
+        capture: Callable[[], Frame] | None = None,
+    ) -> PanelRow | None:
+        """Vuelve a poner `target` a la vista y devuelve la fila tal y como se ve AHORA (con su posición actual).
+
+        Tras `scan` el panel queda desplazado (normalmente al final) y las coordenadas de las filas leídas son
+        las de la captura donde se vieron: pulsarlas cae en otra fila. Se mira la pantalla actual, luego se
+        sube hasta el principio leyendo cada paso y, si aún no está, se baja desde allí. None si no aparece.
+        """
+        lay = self.reader.layout
+        grab = capture or ctx.device.capture
+        frame = grab()
+        hit = self._find(frame.image, target)
+        if hit is not None:
+            return hit
+        h, w = frame.image.shape[:2]
+        _, top, _, bottom = lay.viewport(h, w)
+        x = int(w * (1 + lay.left) / 2)
+        span = int((bottom - top) * 0.55)
+        up = (top + int(0.05 * h), top + int(0.05 * h) + span)  # el dedo baja: se ve lo anterior
+        down = (bottom - int(0.05 * h), bottom - int(0.05 * h) - span)
+        for start, end in (up, down):
+            for _ in range(max_steps):
+                ctx.check_stop()
+                ctx.device.swipe(x, start, x, end)
+                ctx.sleep(settle)
+                nxt = grab()
+                if panel_diff(frame.image, nxt.image, lay) < self.end_threshold:
+                    break  # extremo del panel
+                frame = nxt
+                hit = self._find(frame.image, target)
+                if hit is not None:
+                    return hit
+        return None
+
+    def _find(self, image: np.ndarray, target: PanelRow) -> PanelRow | None:
+        for row in self.reader.read(image).rows:
+            if row.name == target.name and row.quantity == target.quantity and (
+                row.cost is None or target.cost is None or row.cost == target.cost
+            ):
+                return row
+        return None
+
     @staticmethod
     def _add(found: dict[tuple, PanelRow], fresh: list[tuple], row: PanelRow) -> None:
         """Una fila vista varias veces cuenta una: gana la lectura con más campos. `fresh` recoge las claves

@@ -42,6 +42,7 @@ TITLE_PX = 47  # a BASE_HEIGHT
 MISSING_REGION = box(0.28, 0.25, 0.73, 0.40)
 MISSING_PX = 42
 BUTTON_REGION = box(0.08, 0.35, 0.93, 0.98)  # todo el tercio inferior: el Rebuild lo dibuja más arriba
+DISCOUNT_GREEN = (104, 224, 23)  # precio con descuento (medido en «Upgrade Barracks» con Hammer of Building)
 COST_SIZES = range(12, 35)  # a 720 px de alto; se escala con el fotograma
 WALL_MENU_REGION = box(0.18, 0.78, 0.60, 0.98)
 WALL_LABEL_PX = 20
@@ -167,19 +168,24 @@ class DialogReader:
         return classify_icon(float(np.median(pixels[:, 0])), float(pixels[:, 2].mean())), x
 
     def _cost(self, image: np.ndarray, button: Rect, icon_x: int) -> tuple[int | None, float]:
-        """Dígitos a la izquierda del icono; se barren tamaños y gana la mejor confianza."""
+        """Dígitos a la izquierda del icono; se barren tamaños y gana la mejor confianza.
+
+        Con descuento (p. ej. «Hammer of Building») el precio ACTUAL sale en verde y el original, tachado, debajo
+        en blanco: se prueba primero el verde, para no leer nunca el precio tachado como si fuera el actual.
+        """
         k = image.shape[0] / 720
-        best = None
-        # Dos bandas: el botón de mejora pone «Confirm» arriba y el coste abajo; el de Rebuild, un coste mayor.
-        for top, height in ((0.32, 0.56), (0.10, 0.80)):
-            region = Rect(button.x + 6, button.y + int(top * button.h), max(1, icon_x - 7), int(height * button.h))
-            for s in range(int(COST_SIZES.start * k), int(COST_SIZES.stop * k) + 1):
-                r = self.digits.read(image, s, "white", region, DIGITS)
-                if r is not None and (best is None or r.confidence > best.confidence):
-                    best = r
-        if best is None or best.confidence < self.cost_threshold:
-            return None, 0.0
-        return int(best.value), best.confidence
+        for color in (DISCOUNT_GREEN, "white"):
+            best = None
+            # Dos bandas: el botón de mejora pone «Confirm» arriba y el coste abajo; el de Rebuild, un coste mayor.
+            for top, height in ((0.32, 0.56), (0.10, 0.80)):
+                region = Rect(button.x + 6, button.y + int(top * button.h), max(1, icon_x - 7), int(height * button.h))
+                for s in range(int(COST_SIZES.start * k), int(COST_SIZES.stop * k) + 1):
+                    r = self.digits.read(image, s, color, region, DIGITS)
+                    if r is not None and (best is None or r.confidence > best.confidence):
+                        best = r
+            if best is not None and best.confidence >= self.cost_threshold:
+                return int(best.value), best.confidence
+        return None, 0.0
 
     # -------------------------------------------------------------------------- menú del muro
 

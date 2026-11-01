@@ -56,6 +56,7 @@ class BuildState:
     resources: tuple[int | None, int | None, int | None] = (None, None, None)  # oro, elixir, oscuro
     free_builders: int | None = None  # None: desconocido, no se hace nada
     on_cooldown: frozenset[str] = frozenset()
+    game_ordered: bool = False  # el panel quedó ordenado por el filtro del juego: la primera fila elegible gana
 
 
 @dataclass(frozen=True)
@@ -130,8 +131,10 @@ def decide_build_new(state: BuildState, settings: BuildSettings) -> BuildDecisio
     if not eligible:
         return none("ninguna fila nueva elegible", rejected)
 
-    rank = settings.rank or by_cost(settings.order)
-    row = rank(eligible)[0]
+    if settings.rank is None and state.game_ordered:
+        row = eligible[0]
+    else:
+        row = (settings.rank or by_cost(settings.order))(eligible)[0]
     have = _amount(state.resources, row.resource)
     affordable_units = row.quantity if have is None or not row.cost else have // row.cost
     placements = max(1, min(row.quantity, affordable_units, settings.max_placements))

@@ -7,6 +7,7 @@ docs/verificacion-manual-flujo-mejora.md.
 """
 
 import random
+from dataclasses import replace
 
 import pytest
 
@@ -111,7 +112,7 @@ BASE = [
 
 def make_task(village, settings, tmp_path=None, rows=None, **kw):
     cfg = UpgradeConfig(
-        settings=settings, settle_s=0.1, verify_interval_s=0.1, capture_dir=tmp_path,
+        settings=settings, game_sort=False, settle_s=0.1, verify_interval_s=0.1, capture_dir=tmp_path,
         recovery=RecoveryConfig(settle_seconds=0.1), **kw,
     )
     scanner = SinglePageScanner(CachingReader())
@@ -366,3 +367,50 @@ def test_the_adversarial_property_detects_a_broken_title_check(monkeypatch):
         device = run_adversarial(seed, "Cannon")
         caught += any(any(r.contains(x, y) for r in FORBIDDEN.get(i, [])) for i, x, y in device.taps)
     assert caught > 0
+
+
+# --------------------------------------------------------------------------- solo el filtro del juego
+
+def test_without_the_game_filter_nothing_is_started(monkeypatch):
+    monkeypatch.setattr("pyclash.tasks.upgrade.apply_sort", lambda ctx, order: False)
+    ctx = build_ctx(BASE + [route(PANEL, DIALOG, PANEL_ROWS), route(DIALOG, VILLAGE, CONFIRM)])
+    task = make_task(FakeVillage(vstate(2)), settings("Archer Tower"))
+    task.config = replace(task.config, game_sort=True)
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.BLOCKED and "filtro del juego" in result.reason
+    assert not any(PANEL_ROWS.contains(*t) or CONFIRM.contains(*t) for t in taps(ctx))
+
+
+def test_an_unverified_game_order_also_stops_the_task(monkeypatch):
+    """El filtro «se pulsó» pero el panel no quedó ordenado por coste: tampoco se actúa."""
+    monkeypatch.setattr("pyclash.tasks.upgrade.apply_sort", lambda ctx, order: True)
+    ctx = build_ctx(BASE + [route(PANEL, DIALOG, PANEL_ROWS), route(DIALOG, VILLAGE, CONFIRM)])
+    task = make_task(FakeVillage(vstate(2)), settings("Archer Tower"))
+    task.config = replace(task.config, game_sort=True)
+    task.scanner = type("Unsorted", (SinglePageScanner,), {"scan": lambda self, c, **k: PanelScan((), 0, True, False, "desordenado")})(CachingReader())
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.BLOCKED and "desordenado" in result.reason
+
+
+def test_with_the_game_order_the_first_row_wins_and_the_town_hall_never_does():
+    from pyclash.policy.upgrades import Fallback, UpgradeState, decide_upgrade
+
+    hall = PanelRow("Town Hall", 1, 75000, "gold", False, False, 60, True, "upgrade", None, (10, 10), 10)
+    first = replace(hall, name="Barracks", cost=60000, resource="elixir", center=(10, 60), y=60)
+    other = replace(hall, name="Cannon", cost=900, center=(10, 110), y=110)
+    st = UpgradeState((hall, first, other), (99999, 99999, 0), 2, 0, game_ordered=True)
+    # sin prioridades ni alternativa: manda el orden del juego
+    got = decide_upgrade(st, UpgradeSettings(fallback=Fallback.NONE), random.Random(0))
+    assert got.chosen is first
+    # aunque haya una prioridad que apunte a otra fila
+    got = decide_upgrade(st, UpgradeSettings(priorities=(("Cannon",),)), random.Random(0))
+    assert got.chosen is first
+
+
+def test_with_the_game_filter_only_the_first_page_is_read_and_nothing_scrolls(monkeypatch):
+    monkeypatch.setattr("pyclash.tasks.upgrade.apply_sort", lambda ctx, order: True)
+    task = make_task(FakeVillage(vstate(2)), settings("Archer Tower"))
+    task.config = replace(task.config, game_sort=True)
+    assert task._scan_options() == {} # aún sin aplicar
+    task._sort_applied = True
+    assert task._scan_options()["max_steps"] == 0

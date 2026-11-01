@@ -79,6 +79,7 @@ class BuildNewTask(PanelTask):
         self._setup_panel(config or BuildNewConfig(), classifier, scanner, village)
         self.dialogs = dialogs or DialogReader()
         self._retries: dict[str, int] = {}
+        self._sort_applied = False
 
     # ------------------------------------------------------------------------------ recorrido
 
@@ -104,7 +105,15 @@ class BuildNewTask(PanelTask):
             rows = self._open_and_scan(ctx)
             if isinstance(rows, TaskResult):
                 return rows
-            state = BuildState(tuple(rows), resources or (None, None, None), free, self._cooling(ctx, rows))
+            if cfg.game_sort and not (self._sort_applied and self.last_scan.order_ok is True):
+                why = self.last_scan.order_reason if self._sort_applied else "no se pudo aplicar"
+                reason = f"el filtro del juego no se aplicó o no se verificó ({why}): no se hace nada"
+                ctx.events.publish(Warning(reason))
+                self._close(ctx)
+                return TaskResult.blocked(reason)
+            state = BuildState(
+                tuple(rows), resources or (None, None, None), free, self._cooling(ctx, rows), game_ordered=cfg.game_sort
+            )
             decision = decide_build_new(state, settings)
             last_reason = decision.reason
             if decision.chosen is None:
@@ -136,17 +145,24 @@ class BuildNewTask(PanelTask):
     # ------------------------------------------------------------------------------ pasos
 
     def _after_open(self, ctx: Context) -> None:
-        if not self.config.game_sort:
-            return
-        order = "cost_min" if self.config.settings.order is Order.CHEAPEST else "cost_max"
-        if not apply_sort(ctx, order):
-            ctx.events.publish(Warning("no se pudo aplicar el orden del juego; se ordena por coste en el bot"))
+        self._sort_applied = False
+        if self.config.game_sort:
+            self._sort_applied = apply_sort(ctx, self._order())
+
+    def _order(self) -> str:
+        return "cost_min" if self.config.settings.order is Order.CHEAPEST else "cost_max"
+
+    def _scan_options(self) -> dict:
+        return {"expect_order": self._order()} if self._sort_applied else {}
 
     def _attempt(self, ctx: Context, decision: BuildDecision, free_before: int | None) -> _Attempt:
         row = decision.chosen
         assert row is not None and row.name is not None
         ctx.check_stop()
-        ctx.device.tap(*row.center)
+        seen = self._reveal(ctx, row)
+        if seen is None:
+            return self._abort(ctx, row, "la fila ya no se ve en el panel", ctx.device.capture())
+        ctx.device.tap(*seen.center)
         placement, frame = self._await_placement(ctx)
         missing = self.dialogs.missing(frame.image)  # antes que nada: un diálogo también trae una «X» roja
         if missing is not None:

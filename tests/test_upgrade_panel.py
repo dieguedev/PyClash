@@ -394,3 +394,30 @@ def test_apply_sort_fails_if_the_chosen_button_does_not_turn_active():
     )
     assert apply_sort(ctx, "cost_max") is False
     assert len(ctx.device.actions) == 2  # no sigue pulsando a ciegas
+
+
+# --- volver a la fila elegida tras el escaneo --------------------------------------------------
+
+
+def test_reveal_scrolls_back_to_a_row_that_the_scan_left_out_of_sight():
+    """El escaneo termina abajo; la fila elegida («Laboratory») solo se ve arriba. Hay que volver a ella
+    y devolver su posición ACTUAL, no la vieja de la captura donde se leyó."""
+    ctx = make_ctx(
+        frames("upgrade_panel", "upgrade_panel_filtered"),
+        [Transition(1, "swipe", 0)],
+    )
+    ctx.device._index = 1
+    reader = PanelReader()
+    top_rows = {(r.name, r.quantity): r for r in reader.read(fixture_frame("upgrade_panel").image).rows}
+    bottom_names = {(r.name, r.quantity) for r in reader.read(fixture_frame("upgrade_panel_filtered").image).rows}
+    wanted = next(r for k, r in top_rows.items() if k not in bottom_names)
+    got = scanner().reveal(ctx, wanted)
+    assert got is not None and (got.name, got.quantity) == (wanted.name, wanted.quantity)
+    assert got.center == wanted.center  # se ve en la pantalla donde se vio
+    assert any(a.kind == "swipe" for a in ctx.device.actions)
+
+
+def test_reveal_gives_up_when_the_row_is_nowhere_in_the_panel():
+    ctx = make_ctx(frames("upgrade_panel"))
+    ghost = PanelRow("Barracks", 1, 9999, "elixir", False, False, 60, True, "upgrade", None, (10, 10), 10)
+    assert scanner().reveal(ctx, ghost, max_steps=3) is None

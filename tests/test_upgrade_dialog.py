@@ -67,3 +67,16 @@ def test_two_usable_buttons_are_never_guessed():
     a = ConfirmButton(Rect(0, 0, 10, 5), "gold", 100, 0.9)
     assert usable_confirm([a, ConfirmButton(Rect(20, 0, 10, 5), "elixir", 100, 0.9)]) is None
     assert usable_confirm([a, ConfirmButton(Rect(20, 0, 10, 5), None, None, 0.0)]) is a
+
+
+def test_a_discounted_price_is_read_in_green_not_the_struck_original(reader):
+    """«Upgrade Barracks» con Hammer of Building: 60 000 en verde y 120 000 tachado debajo. El precio es el
+    verde; el botón gris del Hammer (un objeto) nunca es candidato."""
+    img = image("upgrade_dialog_discount")
+    assert reader.title(img, "Barracks") is not None
+    buttons = reader.confirm_buttons(img)
+    assert len(buttons) == 1  # solo el verde: el del Hammer no lo es
+    button = usable_confirm(buttons)
+    assert button is not None and (button.resource, button.cost) == ("elixir", 60000)
+    h, w = img.shape[:2]
+    assert button.center[0] > 0.6 * w  # el de la derecha, no el del Hammer

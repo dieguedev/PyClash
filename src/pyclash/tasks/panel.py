@@ -81,9 +81,18 @@ class PanelTask:
         if not ctx.wait_until(opened, self.config.open_timeout_s, 0.5):
             return TaskResult.needs_recovery(f"el menú «{menu.name}» no se abrió")
         self._after_open(ctx)
-        self.last_scan = self.scanner.scan(ctx)  # la tarea puede mirar si el panel se recorrió entero
+        self.last_scan = self.scanner.scan(ctx, **self._scan_options())  # la tarea puede mirar si el panel se recorrió entero
         ctx.progress()
         return list(self.last_scan.rows)
+
+    def _reveal(self, ctx: Context, row: PanelRow) -> PanelRow | None:
+        """La fila con su posición actual: el escaneo deja el panel desplazado y sus coordenadas quedan viejas."""
+        reveal = getattr(self.scanner, "reveal", None)
+        return row if reveal is None else reveal(ctx, row)
+
+    def _scan_options(self) -> dict:
+        """Opciones extra de `PanelScanner.scan` (orden esperado del filtro del juego, pasos máximos...)."""
+        return {}
 
     def _after_open(self, ctx: Context) -> None:
         """Gancho: lo que una tarea quiera hacer con el panel recién abierto, antes de leer las filas."""

@@ -348,16 +348,18 @@ def test_stop_in_the_middle_presses_no_check():
     assert result.outcome is Outcome.STOPPED and row_taps(ctx) == [] and hit(ctx, READY_OK) == 0
 
 
-def test_the_game_sort_is_applied_when_enabled_and_a_failure_only_warns(monkeypatch):
+def test_without_the_game_sort_nothing_is_built_and_the_task_says_why(monkeypatch):
     calls = []
     monkeypatch.setattr("pyclash.tasks.build_new.apply_sort", lambda ctx, order: calls.append(order) or False)
     ctx = build_ctx(happy_routes())
     warnings = collect(ctx, Warning)
     task = make_task(FakeVillage(vstate(3), vstate(2)), Scans([LAB], [], ))
     task.config = BuildNewConfig(**{**task.config.__dict__, "game_sort": True})
-    run_task(task, ctx)
+    result = run_task(task, ctx)
     assert calls and calls[0] == "cost_max"
-    assert any("orden" in w.message for w in warnings)
+    assert result.outcome is Outcome.BLOCKED and "filtro del juego" in result.reason
+    assert row_taps(ctx) == []  # sin filtro no se pulsa ninguna fila
+    assert any("filtro del juego" in w.message for w in warnings)
 
 
 # --------------------------------------------------------------------------- propiedad

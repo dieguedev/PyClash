@@ -74,6 +74,9 @@ class UpgradeState:
     free_builders: int | None = None  # None: desconocido, no se hace nada
     started_this_cycle: int = 0
     on_cooldown: frozenset[str] = frozenset()  # nombres canónicos con cooldown activo
+    # True: el filtro del juego se aplicó y se comprobó que el panel quedó ordenado por coste, así que el orden
+    # de `rows` ES el orden de la alternativa y no se vuelve a ordenar.
+    game_ordered: bool = False
 
 
 @dataclass(frozen=True)
@@ -172,6 +175,14 @@ def decide_upgrade(state: UpgradeState, settings: UpgradeSettings, rng: random.R
         halls = [r for r in eligible if r.name == TOWN_HALL]
         if halls:
             return pick(min(halls, key=lambda r: r.cost or 0), "Rusher: Ayuntamiento asequible")
+
+    if state.game_ordered:
+        # Filtro del juego aplicado: manda su orden. La primera fila elegible (el Ayuntamiento ya está descartado
+        # en Maxer) y nada más: ni prioridades ni alternativa. Los muros van aparte, en lotes.
+        first = next((r for r in eligible if r.kind != "wall" and r.name != WALL), None)
+        if first is None:
+            return none("solo quedan muros", rejected)
+        return pick(first, f"primera fila del filtro del juego ({settings.order.value}): {first.name}")
 
     # Los muros solo se eligen si el usuario los puso en una prioridad: «cualquiera» los deja a los lotes.
     for tier, names in enumerate(settings.priorities):

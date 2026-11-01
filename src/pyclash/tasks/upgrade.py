@@ -28,13 +28,13 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..device.base import Frame
-from ..policy.upgrades import Decision, Mode, UpgradeSettings, UpgradeState, builder_gate, decide_upgrade
+from ..policy.upgrades import Decision, Mode, Order, UpgradeSettings, UpgradeState, builder_gate, decide_upgrade
 from ..runtime.context import Context
 from ..runtime.events import ImprovementStarted, UpgradePlanned, Warning
 from ..screens.classifier import Screen, ScreenClassifier, TextIndicator
 from ..screens.signatures import box
 from ..screens.upgrade_dialog import GEMS, DialogReader, usable_confirm
-from ..screens.upgrade_panel import PanelRow, PanelScanner
+from ..screens.upgrade_panel import PanelRow, PanelScanner, apply_sort
 from ..screens.village import VillageReader
 from .base import Outcome, TaskResult
 from .panel import ENGLISH_HINT, PanelTask
@@ -71,6 +71,9 @@ class UpgradeConfig:
     verify_polls: int = 4
     verify_interval_s: float = 1.5
     max_attempts: int = 6  # filas que se intentan en una ejecución
+    # Orden SOLO con el filtro del juego (Cost Max / Cost Min): si no se aplica o no se verifica, la tarea no hace
+    # nada. False solo para pruebas y simulacros sin juego: entonces ordena el bot.
+    game_sort: bool = True
     capture_dir: Path | None = None
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
 
@@ -96,6 +99,7 @@ class UpgradeTask(PanelTask):
     ) -> None:
         self._setup_panel(config or UpgradeConfig(), classifier, scanner, village)
         self.dialogs = dialogs or DialogReader()
+        self._sort_applied = False
 
     # ------------------------------------------------------------------------------ recorrido
 
@@ -126,8 +130,15 @@ class UpgradeTask(PanelTask):
             rows = self._open_and_scan(ctx)
             if isinstance(rows, TaskResult):
                 return rows
+            if cfg.game_sort and not (self._sort_applied and self.last_scan.order_ok is True):
+                why = self.last_scan.order_reason if self._sort_applied else "no se pudo aplicar"
+                reason = f"el filtro del juego no se aplicó o no se verificó ({why}): no se hace nada"
+                ctx.events.publish(Warning(reason))
+                self._close(ctx)
+                return TaskResult.blocked(reason)
             state = UpgradeState(
-                tuple(rows), resources or (None, None, None), free, started, self._cooling(ctx, rows)
+                tuple(rows), resources or (None, None, None), free, started, self._cooling(ctx, rows),
+                game_ordered=cfg.game_sort,  # el orden del panel ES el del juego: el bot no reordena
             )
             decision = decide_upgrade(state, settings, ctx.rng)
             last_reason = decision.reason
@@ -158,6 +169,19 @@ class UpgradeTask(PanelTask):
 
     # ------------------------------------------------------------------------------ pasos
 
+    def _order(self) -> str:
+        return "cost_min" if self.config.settings.order is Order.CHEAPEST else "cost_max"
+
+    def _scan_options(self) -> dict:
+        # Con el filtro del juego aplicado la mejor fila es la primera: se lee la primera pantalla y no se desplaza.
+        return {"expect_order": self._order(), "max_steps": 0} if self._sort_applied else {}
+
+    def _after_open(self, ctx: Context) -> None:
+        self._sort_applied = False
+        if not self.config.game_sort:
+            return
+        self._sort_applied = apply_sort(ctx, self._order())
+
     def _attempt(
         self, ctx: Context, decision: Decision, free_before: int | None, resources: tuple | None
     ) -> _Attempt:
@@ -178,7 +202,10 @@ class UpgradeTask(PanelTask):
     def _select_and_confirm(self, ctx: Context, row: PanelRow) -> _Attempt:
         """Pulsa la fila y recorre la cadena de pantallas. `kind == "confirmed"`: se pulsó Confirmar."""
         ctx.check_stop()
-        ctx.device.tap(*row.center)
+        seen = self._reveal(ctx, row)
+        if seen is None:
+            return self._abort(ctx, row, "la fila ya no se ve en el panel", ctx.device.capture())
+        ctx.device.tap(*seen.center)
         wall_menu_used = False
         for _ in range(2):  # fila -> (menú del muro) -> diálogo: nunca una tercera pulsación a ciegas
             ctx.sleep(self.config.settle_s)
