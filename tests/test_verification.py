@@ -103,3 +103,11 @@ def test_outcome_ok_rules():
     assert not CheckOutcome(result=TaskResult.failed("x")).ok
     assert not CheckOutcome(result=TaskResult.needs_recovery("x")).ok
     assert dataclasses.is_dataclass(CheckOutcome)
+
+
+def test_card_tap_check_taps_once_and_never_holds_or_swipes(tmp_path):
+    dev, clock = device(fixture_frame("two_troops_bar"))
+    out = run_check(check_by_key("card_tap"), dev, clock=clock, capture_dir=tmp_path)
+    assert [a.kind for a in dev.actions] == ["tap"]  # una pulsación sobre la carta: nada de despliegue
+    assert not dev.held and out.ok
+    assert len(list(tmp_path.glob("card-*.png"))) == 2  # antes y después

@@ -18,6 +18,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Literal
 
+import cv2
+import cv2
 import numpy as np
 from PIL import Image
 
@@ -30,6 +32,7 @@ from ..runtime.events import Event, WallBatchPlanned
 from ..runtime.stop import StopRequested, StopToken
 from ..screens.battle_bar import BarReader
 from ..screens.classifier import Screen, ScreenClassifier
+from ..screens.red_zone import read_red_zone, read_red_zone_frames
 from ..screens.loot import read_enemy_loot, read_hud_gold, read_next_cost, read_search_cost
 from ..screens.village import VillageReader
 from ..tasks.base import Outcome, Task, TaskResult, run_task
@@ -136,12 +139,64 @@ def _check_loot(ctx: Context, _dir: Path) -> CheckOutcome:
     return CheckOutcome(lines)
 
 
-def _check_bar(ctx: Context, _dir: Path) -> CheckOutcome:
-    cards = BarReader().detect(ctx.device.capture().image)
+def _check_bar(ctx: Context, directory: Path) -> CheckOutcome:
+    image = ctx.device.capture().image
+    cards = BarReader().detect(image)
     if not cards:
         return CheckOutcome(["No se detecta ninguna carta. Ponte en la pantalla de despliegue de una batalla."])
-    lines = [f"Cartas detectadas: {len(cards)}"]
-    lines += [f"  {c.kind.value if hasattr(c.kind, 'value') else c.kind} · x{c.count} · agotada={c.exhausted}" for c in cards]
+    lines = [f"Cartas detectadas: {len(cards)} (pantalla {image.shape[1]}×{image.shape[0]})"]
+    for i, c in enumerate(cards, 1):
+        kind = c.kind.value if hasattr(c.kind, "value") else c.kind
+        r = c.rect
+        lines.append(f"  {i}. {kind} · x{c.count} · agotada={c.exhausted} · caja x={r.x} y={r.y} {r.w}×{r.h} · se pulsaría en {c.center}")
+    return CheckOutcome(lines)
+
+
+def _check_card_tap(ctx: Context, directory: Path) -> CheckOutcome:
+    """Pulsa la primera carta SIN desplegar nada y mide si cambió: ¿llega el toque a seleccionarla?"""
+    before = ctx.device.capture().image
+    cards = BarReader().detect(before)
+    if not cards:
+        return CheckOutcome(["No se detecta ninguna carta. Ponte en la exploración o en el despliegue de una batalla."])
+    card = cards[0]
+    ctx.device.tap(*card.center)
+    ctx.sleep(0.6)
+    after = ctx.device.capture().image
+    r = card.rect
+    # La carta elegida se ve distinta (resaltada o elevada): se mide el cambio en su caja ampliada por arriba.
+    top = max(0, r.y - 30)
+    a, b = before[top : r.y + r.h, r.x : r.x + r.w].astype(np.int16), after[top : r.y + r.h, r.x : r.x + r.w].astype(np.int16)
+    change = float(np.abs(a - b).mean())
+    rest = float(np.abs(before[: top - 1] .astype(np.int16) - after[: top - 1].astype(np.int16)).mean()) if top > 1 else 0.0
+    path_b, path_a = save_frame(before, directory, "card-before"), save_frame(after, directory, "card-after")
+    lines = [
+        f"Pulsada la carta 1 en {card.center} (caja x={r.x} y={r.y} {r.w}×{r.h}). No se ha desplegado nada.",
+        f"Cambio medio en la zona de la carta: {change:.1f} · en el resto de la pantalla: {rest:.1f}",
+        "Si la carta se selecciona, su zona cambia claramente más que el resto (y se ve elevada o resaltada).",
+        f"Antes: {path_b}",
+        f"Después: {path_a}",
+    ]
+    return CheckOutcome(lines)
+
+
+def _check_red_zone(ctx: Context, directory: Path) -> CheckOutcome:
+    """Lee la zona roja en varios fotogramas (el contorno parpadea) y dice cuánto se ve en cada uno."""
+    frames = []
+    for _ in range(8):
+        frames.append(ctx.device.capture().image)
+        ctx.sleep(0.3)
+    lines = [f"Fotogramas leídos: {len(frames)} (pantalla {frames[0].shape[1]}×{frames[0].shape[0]})"]
+    for i, image in enumerate(frames, 1):
+        one = read_red_zone(image)
+        lines.append(f"  fotograma {i}: " + (f"zona de {one.zone.pixels} px (ratio {one.zone.ratio:.1f})" if one.zone else one.reason))
+    both = read_red_zone_frames(frames)
+    if both.zone is None:
+        lines.append(f"COMBINADOS: no se encuentra zona roja — {both.reason}")
+        return CheckOutcome(lines)
+    lines.append(f"COMBINADOS: zona de {both.zone.pixels} px (ratio {both.zone.ratio:.1f}), envolvente de {len(both.zone.hull)} puntos")
+    marked = np.ascontiguousarray(frames[0].copy())
+    cv2.polylines(marked, [np.array(both.zone.hull, np.int32)], True, (0, 120, 255), 4)
+    lines.append(f"Captura con la envolvente dibujada (naranja): {save_frame(marked, directory, 'red-zone')}")
     return CheckOutcome(lines)
 
 
@@ -252,6 +307,8 @@ CHECKS: tuple[Check, ...] = (
     Check("village", "Leer la aldea", "read", "Constructores, laboratorio, recursos y almacenes llenos (con acuerdo entre capturas).", _check_village),
     Check("loot", "Leer botín / costes", "read", "En exploración: botín del rival y coste de «Next».", _check_loot),
     Check("bar", "Leer barra de despliegue", "read", "En una batalla: cartas, contadores y cuáles están agotadas.", _check_bar),
+    Check("red_zone", "Leer zona roja (varios fotogramas)", "read", "En la exploración: cuánto se ve el contorno rojo en cada fotograma y combinado.", _check_red_zone),
+    Check("card_tap", "Probar pulsar la carta (no despliega)", "dry", "Pulsa la primera carta de la barra y mide si cambia; guarda antes y después.", _check_card_tap),
     Check("capture", "Guardar captura", "read", "Guarda la pantalla actual en captures_raw/ (ignorado por git).", _check_capture),
     Check("panel", "Leer panel Buildings & Heroes", "dry", "Abre el panel, lista las filas con coste y color, y lo cierra.", _check_panel),
     Check("upgrade_dry", "Mejora (Dry run)", "dry", "Decide qué mejoraría y lo registra; no pulsa ninguna fila.", _upgrade(Mode.DRY_RUN)),
