@@ -66,7 +66,7 @@ from ..screens.signatures import box
 from ..screens.troops import TroopPortraits, check_army
 from ..vision.ocr import OcrEngine
 from ..vision.text import DigitReader
-from .base import Outcome, TaskResult
+from .base import Outcome, SessionView, ShouldRun, TaskResult
 from .recovery import RecoveryConfig, RecoverScreen
 
 ENGLISH_HINT = " (el bot exige el juego en inglés)"
@@ -101,7 +101,7 @@ class FarmConfig:
     press_hold_min_s: float = 0.3
     press_hold_max_s: float = 0.5
     check_every_s: float = 0.5  # cada cuánto se mira si la carta se agotó durante el trazo
-    battle_timeout_s: float = 330.0  # 3 min de batalla más margen; no se cancela si se pasa: se avisa
+    battle_timeout_s: float = 220.0  # 3 min de batalla más margen (debe quedar por debajo del cronómetro de inactividad)
     capture_dir: Path | None = None
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
 
@@ -111,6 +111,8 @@ Phase = Literal["scouting", "gold", "waiting"]
 
 class FarmTask:
     name = "village_farming"
+    priority = 40
+    retry_without_cooldown = True  # si falla se reintenta sin descansar (los fallos seguidos siguen contando)
 
     def __init__(
         self,
@@ -136,6 +138,12 @@ class FarmTask:
         self.next_cost: int | None = None
         self._relaxed = RelaxedTracker()
         self._last_tap = -1e9
+
+    def should_run(self, ctx: Context, view: SessionView) -> ShouldRun:
+        """Procede mientras algún almacén tenga hueco: con oro y elixir llenos no hay nada que ganar."""
+        if view.village.storages_full:
+            return ShouldRun.no("almacenes llenos")
+        return ShouldRun.yes()
 
     @property
     def portraits(self) -> TroopPortraits:
@@ -298,6 +306,7 @@ class FarmTask:
             if self._village_changed(ctx, loot, image):
                 skips += 1
                 stuck = 0
+                ctx.progress()
                 continue
             stuck += 1
             ctx.events.publish(Warning(f"«Next» sin efecto verificable ({stuck}/2)"))
@@ -476,6 +485,7 @@ class FarmTask:
     def _wait_end(self, ctx: Context) -> TaskResult:
         """El juego termina la batalla; aquí solo se espera y se vuelve a la aldea por la pantalla de resultado."""
         cfg = self.config
+        ctx.progress()  # empieza la espera del combate: el cronómetro de inactividad vuelve a contar desde aquí
         ended = ctx.wait_until(lambda: self._screen(ctx) in (Screen.RESULT, Screen.MAIN_VILLAGE), cfg.battle_timeout_s, 2.0)
         if not ended:
             reason = f"la batalla no terminó en {cfg.battle_timeout_s:.0f} s (no se cancela)"

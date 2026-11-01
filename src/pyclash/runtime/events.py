@@ -69,6 +69,15 @@ class LootObtained(Event):
 @dataclass(frozen=True)
 class Idle(Event):
     seconds: float
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class SessionEnded(Event):
+    """La sesión terminó: `reason` dice por qué; `error` es True si no fue una parada pedida."""
+
+    reason: str
+    error: bool = False
 
 
 @dataclass(frozen=True)

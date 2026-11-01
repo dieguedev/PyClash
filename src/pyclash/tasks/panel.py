@@ -17,7 +17,7 @@ from ..screens.classifier import ScreenClassifier
 from ..screens.panel_layout import PANEL_PROFILES
 from ..screens.upgrade_panel import PanelReader, PanelRow, PanelScanner
 from ..screens.village import VillageReader
-from .base import Outcome, TaskResult
+from .base import Outcome, SessionView, ShouldRun, TaskResult
 from .recovery import RecoverScreen
 
 ENGLISH_HINT = " (el bot exige el juego en inglés)"
@@ -28,6 +28,22 @@ class PanelTask:
 
     cooldown_prefix = "upgrade"  # clave de cooldown: «<prefijo>:<menú>:<nombre>»
     capture_prefix = "upgrade"  # nombre de las capturas guardadas
+    priority = 100
+
+    def _reserve(self, ctx: Context) -> int:
+        """Constructores que se dejan libres. Sin muros que mejorar, la reserva para ellos no tiene sentido."""
+        return 0 if ctx.walls_complete else self.config.settings.reserve_builders
+
+    def should_run(self, ctx: Context, view: SessionView) -> ShouldRun:
+        """Para mejoras y edificios nuevos: procede si hay más constructores libres que la reserva."""
+        village = view.village
+        free = village.free_builders if "builders" not in village.unreliable else None
+        if free is None:
+            return ShouldRun.no("constructores libres desconocidos")
+        reserve = self._reserve(ctx)
+        if free <= reserve:
+            return ShouldRun.no(f"{free} constructores libres, reserva {reserve}")
+        return ShouldRun.yes(f"{free} constructores libres (reserva {reserve})")
 
     def _setup_panel(
         self,
@@ -66,6 +82,7 @@ class PanelTask:
             return TaskResult.needs_recovery(f"el menú «{menu.name}» no se abrió")
         self._after_open(ctx)
         self.last_scan = self.scanner.scan(ctx)  # la tarea puede mirar si el panel se recorrió entero
+        ctx.progress()
         return list(self.last_scan.rows)
 
     def _after_open(self, ctx: Context) -> None:

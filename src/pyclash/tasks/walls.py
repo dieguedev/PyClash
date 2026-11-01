@@ -33,6 +33,7 @@ from ..policy.walls import (
     gold_only_level,
     next_add,
     verified_in_panel,
+    wall_gate,
 )
 from ..runtime.context import Context
 from ..runtime.events import CaptureSaved, WallBatchPlanned, WallBatchStep, Warning
@@ -41,7 +42,7 @@ from ..screens.upgrade_dialog import GEMS, DialogReader
 from ..screens.upgrade_panel import PanelRow, PanelScanner
 from ..screens.village import VillageReader
 from ..screens.wall_batch import BatchBar, BatchBarReader, UpgradeButton
-from .base import Outcome, TaskResult
+from .base import Outcome, SessionView, ShouldRun, TaskResult
 from .panel import ENGLISH_HINT, PanelTask
 from .recovery import RecoveryConfig
 from .upgrade import VILLAGE_MENU, MenuDefinition
@@ -84,6 +85,7 @@ class _Batch:
 
 class WallBatchTask(PanelTask):
     name = "upgrade_walls"
+    priority = 30
     cooldown_prefix = "walls"
     capture_prefix = "walls"
 
@@ -101,6 +103,13 @@ class WallBatchTask(PanelTask):
         self.bars = bars or BatchBarReader()
         self.dialogs = dialogs or DialogReader()
         self.inputs = inputs or (lambda ctx: WallInputs())
+
+    def should_run(self, ctx: Context, view: SessionView) -> ShouldRun:
+        """Procede con la puerta de constructores de la política: los muros usan el último constructor libre."""
+        village = view.village
+        free = village.free_builders if "builders" not in village.unreliable else None
+        blocked = wall_gate(free, self.config.settings.reserve_builder_for_walls, None)
+        return ShouldRun.no(blocked) if blocked else ShouldRun.yes(f"{free} constructores libres")
 
     # ------------------------------------------------------------------------------ recorrido
 
@@ -126,7 +135,9 @@ class WallBatchTask(PanelTask):
         row = self._wall_row(rows)
         if row is None:
             self._close(ctx)
-            return TaskResult.nothing_to_do(f"no hay fila «{WALL}» en el panel")
+            # Con el panel recorrido entero, que no haya fila «Wall» es que no queda ningún muro por mejorar.
+            done = bool(self.last_scan.reached_end)
+            return TaskResult.nothing_to_do(f"no hay fila «{WALL}» en el panel", exhausted=done)
         if decision.resource == "elixir" and gold_only_level(row.level):
             # Los muros que suben al nivel 2, 3 o 4 solo se pagan con oro: se decide de nuevo sin elixir.
             decision = decide_walls(state, replace(settings, enabled=settings.enabled - {"elixir"}))
