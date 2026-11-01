@@ -30,6 +30,13 @@ _INK = 180  # mínimo de los tres canales para contar un píxel como parte del d
 _HALF = (7, 8)  # semiancho y semialto de la ventana de comparación (15×17 px)
 MIN_SCORE = 0.9  # coincidencia mínima con una plantilla
 MIN_MARGIN = 0.2  # ventaja mínima sobre la segunda mejor
+# Los muros solo necesitan saber si el nivel es 2, 3 o 4 (se pagan solo con oro): con esos tres dígitos el margen
+# estricto se cumple de sobra. NO se amplía a los demás para no relajar esa garantía.
+GOLD_ONLY_DIGITS = (2, 3, 4)
+# Para el resto de edificios se comparan todos los dígitos. 5, 6 y 8 se parecen mucho a 15×17 px: medido entre dos
+# capturas, el dígito correcto puntúa 0,95-0,99 y el mejor rival hasta 0,93, así que el margen es mucho menor.
+ANY_MIN_SCORE = 0.85
+ANY_MIN_MARGIN = 0.05
 
 
 def _ncc(a: np.ndarray, b: np.ndarray) -> float:
@@ -64,16 +71,33 @@ def _templates() -> dict[int, np.ndarray]:
     return out
 
 
-def read_level(image: np.ndarray, name_y: int) -> int | None:
-    """Nivel de la insignia de la fila cuyo nombre está en `name_y`, o None si no se reconoce con seguridad."""
+def read_level(
+    image: np.ndarray,
+    name_y: int,
+    digits: tuple[int, ...] = GOLD_ONLY_DIGITS,
+    min_score: float = MIN_SCORE,
+    min_margin: float = MIN_MARGIN,
+) -> int | None:
+    """Nivel de la insignia de la fila cuyo nombre está en `name_y`, o None si no se reconoce con seguridad.
+
+    Por defecto solo compara con 2, 3 y 4 (lo que necesitan los muros). Para cualquier nivel usa `read_any_level`.
+    """
     probe = window(image, name_y)
-    templates = _templates()
+    templates = {k: t for k, t in _templates().items() if k in digits}
     if probe is None or not templates:
         return None
     scores = sorted(((_ncc(probe, t), level) for level, t in templates.items() if t.shape == probe.shape), reverse=True)
     if not scores:
         return None
     runner_up = scores[1][0] if len(scores) > 1 else 0.0
-    if scores[0][0] < MIN_SCORE or scores[0][0] - runner_up < MIN_MARGIN:
+    if scores[0][0] < min_score or scores[0][0] - runner_up < min_margin:
         return None
     return scores[0][1]
+
+
+def read_any_level(image: np.ndarray, name_y: int) -> int | None:
+    """Como `read_level`, pero con todos los dígitos que tengan plantilla y un margen realista entre parecidos.
+
+    Es la lectura para el nivel de un edificio (p. ej. el Ayuntamiento). Devuelve None ante la duda.
+    """
+    return read_level(image, name_y, tuple(_templates()), ANY_MIN_SCORE, ANY_MIN_MARGIN)
