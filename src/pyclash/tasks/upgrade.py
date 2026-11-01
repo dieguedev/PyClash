@@ -24,7 +24,7 @@ la bajada del elixir en lugar del contador.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..device.base import Frame
@@ -84,6 +84,7 @@ class _Attempt:
 
 class UpgradeTask(PanelTask):
     name = "upgrade_village"
+    priority = 20
 
     def __init__(
         self,
@@ -98,8 +99,14 @@ class UpgradeTask(PanelTask):
 
     # ------------------------------------------------------------------------------ recorrido
 
+    def _live_settings(self, ctx: Context) -> UpgradeSettings:
+        """Ajustes de la tarea con lo que el usuario cambió en vivo y la reserva ya relajada."""
+        base = self.config.settings
+        return replace(base, reserve_builders=self._reserve(ctx), excluded=base.excluded | ctx.settings.excluded)
+
     def run(self, ctx: Context) -> TaskResult:
         cfg = self.config
+        settings = self._live_settings(ctx)
         back = self._to_village(ctx)
         if back is not None:
             return back
@@ -111,7 +118,7 @@ class UpgradeTask(PanelTask):
             free = village.free_builders if "builders" not in village.unreliable else None
             resources = village.resources if "resources" not in village.unreliable else None
             base = UpgradeState((), resources or (None, None, None), free, started)
-            gate = builder_gate(base, cfg.settings)
+            gate = builder_gate(base, settings)
             if gate:
                 last_reason = gate
                 break
@@ -122,17 +129,18 @@ class UpgradeTask(PanelTask):
             state = UpgradeState(
                 tuple(rows), resources or (None, None, None), free, started, self._cooling(ctx, rows)
             )
-            decision = decide_upgrade(state, cfg.settings, ctx.rng)
+            decision = decide_upgrade(state, settings, ctx.rng)
             last_reason = decision.reason
             if decision.chosen is None:
                 self._close(ctx)
                 break
-            if cfg.settings.mode is Mode.DRY_RUN:
+            if settings.mode is Mode.DRY_RUN:
                 ctx.events.publish(UpgradePlanned(decision.chosen.name or "?", decision.reason))
                 back = self._close(ctx)
                 return back or TaskResult(Outcome.DONE, f"dry run: {decision.reason}")
 
             attempts += 1
+            ctx.progress()
             result = self._attempt(ctx, decision, free, resources)
             if result.kind == "blocked":
                 return TaskResult.blocked(result.reason)
