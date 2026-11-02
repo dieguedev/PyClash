@@ -49,6 +49,7 @@ from ..screens.upgrade_panel import PanelRow, PanelScanner, apply_sort
 from ..screens.village import VillageReader
 from .base import Outcome, TaskResult
 from .panel import ENGLISH_HINT, PanelTask
+from .read_search_cost import ReadSearchCost
 from .recovery import RecoveryConfig
 
 _RESOURCE_INDEX = {"gold": 0, "elixir": 1, "dark_elixir": 2}
@@ -107,8 +108,10 @@ class UpgradeTask(PanelTask):
         scanner: PanelScanner | None = None,
         dialogs: DialogReader | None = None,
         village: VillageReader | None = None,
+        cost_reader: ReadSearchCost | None = None,
     ) -> None:
         self._setup_panel(config or UpgradeConfig(), classifier, scanner, village)
+        self.cost_reader = cost_reader or ReadSearchCost(classifier=self.classifier)
         self.dialogs = dialogs or DialogReader()
         self._sort_applied = False
 
@@ -127,6 +130,7 @@ class UpgradeTask(PanelTask):
             return back
         started = attempts = 0
         last_reason = ""
+        cost_read_failed = False
         # El HUD solo se dibuja con la aldea a la vista: el nivel del Ayuntamiento se lee antes de abrir el panel.
         th_level = read_town_hall_level(ctx.device.capture().image)
         while attempts < cfg.max_attempts:
@@ -139,6 +143,18 @@ class UpgradeTask(PanelTask):
             if gate:
                 last_reason = gate
                 break
+
+            # Reserva de oro (#32): sin coste de búsqueda reciente no se decide sobre oro. Se lee tras la puerta de
+            # constructores (sin constructor libre no hay nada que decidir) y antes de abrir el panel;
+            # si falla se sigue sin oro (el elixir no depende de la reserva) y no se reintenta en esta pasada.
+            if ctx.gold_reserve.needs_read(ctx.clock.now()) and not cost_read_failed:
+                read = self.cost_reader.run(ctx)
+                if read.outcome is not Outcome.DONE:
+                    cost_read_failed = True
+                    ctx.events.publish(Warning(f"sin coste de búsqueda, no se gasta oro: {read.reason}"))
+                    back = self._to_village(ctx)
+                    if back is not None:
+                        return back
 
             rows = self._open_and_scan(ctx)
             if isinstance(rows, TaskResult):
@@ -162,6 +178,7 @@ class UpgradeTask(PanelTask):
                 th_level=th_level,
                 offers_th10=offers,
                 scan_complete=scan_complete,
+                gold_floor=ctx.gold_reserve.floor(ctx.clock.now()),
             )
             decision = decide_upgrade(state, settings, ctx.rng)
             last_reason = decision.reason

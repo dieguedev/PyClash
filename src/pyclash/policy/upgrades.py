@@ -49,6 +49,8 @@ class Reason(Enum):
     NOT_AFFORDABLE = "coste en rojo"
     UNKNOWN_RESOURCE = "recurso o coste indeterminado"
     INSUFFICIENT = "recursos insuficientes"
+    GOLD_RESERVE = "dejaría el oro por debajo de la reserva"
+    GOLD_UNKNOWN = "reserva de oro desconocida: no se gasta oro"
     COOLDOWN = "en cooldown"
     EXCLUDED = "excluida"
     HEROES_EXCLUDED = "héroes excluidos"
@@ -104,6 +106,8 @@ class UpgradeState:
     offers_th10: bool | None = None
     # True: el panel se recorrió entero, así que `rows` es todo lo que queda por mejorar.
     scan_complete: bool = False
+    # Reserva de oro (#32): el oro que debe quedar tras gastar. None: se desconoce y no se gasta oro. 0: sin reserva.
+    gold_floor: int | None = 0
 
 
 @dataclass(frozen=True)
@@ -127,7 +131,10 @@ class Decision:
 
 # Filas que ahora no se pueden empezar pero siguen por mejorar: cuentan como «quedan otras mejoras».
 _STILL_PENDING = frozenset(
-    {Reason.NOT_AFFORDABLE, Reason.INSUFFICIENT, Reason.UNKNOWN_RESOURCE, Reason.COOLDOWN, Reason.GEMS}
+    {
+        Reason.NOT_AFFORDABLE, Reason.INSUFFICIENT, Reason.UNKNOWN_RESOURCE, Reason.COOLDOWN, Reason.GEMS,
+        Reason.GOLD_RESERVE, Reason.GOLD_UNKNOWN,
+    }
 )
 
 
@@ -161,6 +168,14 @@ def _screen(row: PanelRow, settings: UpgradeSettings, state: UpgradeState) -> Re
         have = _amount(state.resources, row.resource)
         if have is not None and row.cost > have:
             return Reason.INSUFFICIENT
+        if row.resource == "gold":  # solo el oro tiene reserva: elixir y elixir oscuro no se tocan
+            if state.gold_floor is None:
+                return Reason.GOLD_UNKNOWN
+            if state.gold_floor > 0:
+                if have is None:
+                    return Reason.GOLD_UNKNOWN
+                if have - row.cost < state.gold_floor:
+                    return Reason.GOLD_RESERVE
     # Nunca TH9 -> TH10: el Ayuntamiento solo se elige si la fila está localizada y su número (el nivel al que se sube)
     # se reconoció y es 2-9, el HUD no dice TH9 y el panel descarta con seguridad la tarjeta del TH10. Cualquier duda
     # (fila sin número, nivel sin leer, lectura None) es «no se sube».

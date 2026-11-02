@@ -252,9 +252,13 @@ def default_tasks(
     from .build_new import BuildNewTask
     from .farm_window import FarmWindowTask
     from .upgrade import UpgradeTask
-    from .walls import WallBatchTask, WallConfig
+    from .walls import WallBatchTask, WallConfig, WallInputs
 
-    walls = WallBatchTask(WallConfig(settings=WallSettings(reserve_builder_for_walls=True)))
+    # Los muros solo gastan oro con la reserva (#32) conocida y vigente; sin ella gastan solo elixir.
+    walls = WallBatchTask(
+        WallConfig(settings=WallSettings(reserve_builder_for_walls=True)),
+        inputs=lambda ctx: WallInputs(gold_floor=ctx.gold_reserve.floor(ctx.clock.now())),
+    )
     return [BuildNewTask(), UpgradeTask(), walls, FarmWindowTask(policy=policy, on_attack=on_attack)]
 
 

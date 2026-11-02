@@ -39,7 +39,9 @@ from ..screens.village import VillageReader
 from ..tasks.base import Outcome, Task, TaskResult, run_task
 from ..tasks.build_new import BuildNewConfig, BuildNewTask
 from ..tasks.farm import FarmConfig, FarmTask
+from ..policy.gold_reserve import GoldReserve
 from ..tasks.panel import PanelTask
+from ..tasks.read_search_cost import ReadSearchCost
 from ..tasks.upgrade import UpgradeConfig, UpgradeTask
 from ..tasks.walls import WallBatchTask, WallConfig, WallInputs
 from ..tasks.zoom import ZoomOut, ZoomOutConfig
@@ -289,9 +291,9 @@ def _upgrade_rusher_dry(ctx: Context, directory: Path) -> CheckOutcome:
 def _walls(dry_run: bool) -> Callable[[Context, Path], CheckOutcome]:
     def run(ctx: Context, directory: Path) -> CheckOutcome:
         # Sin orquestador, lo que este normalmente le da a la tarea se da aquí: no hay mejoras pendientes que
-        # tengan prioridad. El oro solo se ofrece en el simulacro (colchón 0): en el real, sin la reserva de la
-        # #32, no se gasta oro y los muros solo gastan elixir.
-        inputs = WallInputs(gold_floor=0 if dry_run else None, upgrades_pending=False)
+        # tengan prioridad. El oro solo se ofrece en el simulacro (colchón 0) o con la reserva (#32) ya leída.
+        floor = 0 if dry_run else ctx.gold_reserve.floor(ctx.clock.now())
+        inputs = WallInputs(gold_floor=floor, upgrades_pending=False)
         planned: list[WallBatchPlanned] = []
         ctx.events.subscribe(WallBatchPlanned, planned.append)
         out = _run_task(WallBatchTask(WallConfig(dry_run=dry_run, capture_dir=directory), inputs=lambda _ctx: inputs), ctx)
@@ -302,7 +304,10 @@ def _walls(dry_run: bool) -> Callable[[Context, Path], CheckOutcome]:
             )
         out.lines.append(
             "(Simulacro con colchón de oro 0: también contempla el oro.)" if dry_run
-            else "Nota: sin la reserva de oro (#32) los muros solo gastan elixir."
+            else (
+                f"Reserva de oro: {floor}." if floor is not None
+                else "Nota: reserva de oro sin leer (usa «Leer coste de búsqueda»): los muros solo gastan elixir."
+            )
         )
         return out
 
@@ -324,6 +329,20 @@ def _farm(ctx: Context, directory: Path) -> CheckOutcome:
     return _run_task(FarmTask(FarmConfig(capture_dir=directory)), ctx)
 
 
+def _search_cost(ctx: Context, directory: Path) -> CheckOutcome:
+    """Lee el coste de «Find a Match» sin pagar y muestra la reserva de oro que se deriva. Solo lectura."""
+    task = ReadSearchCost()
+    out = _run_task(task, ctx)
+    if task.cost is None:
+        out.lines.append("No se leyó el coste: con esto el bot no gastaría oro. Ponte en la aldea y con el juego en inglés.")
+        return out
+    reserve = GoldReserve()
+    reserve.update(task.cost, task.cost, ctx.clock.now())
+    out.lines.append(f"Coste de «Find a Match»: {task.cost}")
+    out.lines.append(f"Reserva de oro (75 × {task.cost} + {task.cost}): {reserve.floor(ctx.clock.now())}")
+    return out
+
+
 def _zoom_out(ctx: Context, directory: Path) -> CheckOutcome:
     """Cierra el menú abierto con su X, aleja al máximo y guarda la captura final para verla. No gasta."""
     out = _run_task(ZoomOut(ZoomOutConfig(capture_dir=directory)), ctx)
@@ -338,6 +357,7 @@ CHECKS: tuple[Check, ...] = (
     Check("inactivity", "¿Ve el aviso de inactividad?", "read", "Con «Anyone there?» en pantalla: si lo reconoce y dónde pulsaría «RELOAD GAME». No pulsa.", _check_inactivity),
     Check("village", "Leer la aldea", "read", "Constructores, laboratorio, recursos y almacenes llenos (con acuerdo entre capturas).", _check_village),
     Check("loot", "Leer botín / costes", "read", "En exploración: botín del rival y coste de «Next».", _check_loot),
+    Check("search_cost", "Leer coste de búsqueda", "dry", "Abre Battle, lee el coste de «Find a Match» sin pagar, cierra y muestra la reserva de oro. No gasta.", _search_cost),
     Check("bar", "Leer barra de despliegue", "read", "En una batalla: cartas, contadores y cuáles están agotadas.", _check_bar),
     Check("red_zone", "Leer zona roja (varios fotogramas)", "read", "En la exploración: cuánto se ve el contorno rojo en cada fotograma y combinado.", _check_red_zone),
     Check("card_tap", "Probar pulsar la carta (no despliega)", "dry", "Pulsa la primera carta de la barra y mide si cambia; guarda antes y después.", _check_card_tap),

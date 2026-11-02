@@ -217,6 +217,7 @@ class FarmTask:
         cost = read_search_cost(ctx.device.capture().image, self.digits)
         if cost is not None:
             self.search_cost = cost
+            ctx.gold_reserve.update(cost, cost, ctx.clock.now())  # los dos costes se leen del mismo botón
         if not self._tap_indicator(ctx, FIND_A_MATCH):
             return "stuck"
 

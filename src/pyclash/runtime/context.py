@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Iterator, Mapping
 
 from ..device.base import Device
+from ..policy.gold_reserve import GoldReserve
 from ..vision.base import Vision
 from .clock import Clock
 from .cooldowns import CooldownRegistry
@@ -37,6 +38,8 @@ class Context:
     settings_source: Callable[[], SessionSettings] | None = None
     # Los muros ya no tienen nada que mejorar: la reserva de constructor para ellos deja de aplicar.
     walls_complete: bool = False
+    # Costes de búsqueda leídos del juego y umbral de oro que se deriva de ellos (issue #32); solo en memoria.
+    gold_reserve: GoldReserve = field(default_factory=GoldReserve)
     cooldowns: CooldownRegistry = field(init=False)
     _inactivity_limit: float | None = field(default=None, init=False, repr=False)
     _progress_at: float = field(default=0.0, init=False, repr=False)

@@ -346,3 +346,42 @@ def test_unknown_builders_wait_instead_of_working():
 
 def test_nothing_left_to_upgrade_finishes():
     assert decide_idle(3, 1, False, nothing_left=True).action is Idle.FINISH
+
+
+# --------------------------------------------------------------------------- reserva de oro (#32)
+
+
+def test_mejora_de_oro_que_cabe_sobre_la_reserva_se_aplica():  # R1
+    d = decide(state(row("Cannon", cost=20_000), resources=(100_000, 0, 0), gold_floor=30_000))
+    assert name_of(d) == "Cannon"
+
+
+def test_mejora_de_oro_que_dejaria_menos_que_la_reserva_se_rechaza_con_motivo():  # R1
+    d = decide(state(row("Cannon", cost=20_000), resources=(40_000, 0, 0), gold_floor=30_000))
+    assert d.chosen is None
+    assert d.why_not("Cannon") == [Reason.GOLD_RESERVE]
+
+
+def test_sin_reserva_conocida_no_se_gasta_oro_pero_si_elixir():  # R2
+    d = decide(
+        state(row("Cannon", cost=10, y=1), row("Archer Tower", cost=10, resource="elixir", y=2), gold_floor=None),
+        priorities=(("Cannon",), ("Archer Tower",)),
+    )
+    assert name_of(d) == "Archer Tower"
+    assert d.why_not("Cannon") == [Reason.GOLD_UNKNOWN]
+
+
+def test_la_reserva_solo_cuenta_oro_no_elixir():  # R3
+    d = decide(state(row("Archer Tower", cost=900_000, resource="elixir"), resources=(10, 1_000_000, 0), gold_floor=500_000))
+    assert name_of(d) == "Archer Tower"
+
+
+def test_oro_sin_lectura_con_reserva_positiva_no_se_gasta():
+    d = decide(state(row("Cannon", cost=10), resources=(None, None, None), gold_floor=30_000))
+    assert d.why_not("Cannon") == [Reason.GOLD_UNKNOWN]
+
+
+def test_una_mejora_frenada_por_la_reserva_cuenta_como_pendiente_para_el_ayuntamiento():
+    d = decide(state(row("Cannon", cost=20_000, y=1), row("Town Hall", cost=10, y=2), resources=(40_000, 0, 0), gold_floor=30_000, th_level=5, offers_th10=False))
+    assert d.chosen is None
+    assert d.why_not("Town Hall") == [Reason.OTHER_UPGRADES_FIRST]

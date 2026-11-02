@@ -20,7 +20,7 @@ from pyclash.runtime.events import CaptureSaved, ImprovementStarted, UpgradePlan
 from pyclash.screens.upgrade_dialog import DialogReader
 from pyclash.screens.upgrade_panel import PanelReader, PanelRow, PanelScan, PanelScanner
 from pyclash.screens.village import VillageState
-from pyclash.tasks.base import Outcome, run_task
+from pyclash.tasks.base import Outcome, TaskResult, run_task
 from pyclash.tasks.recovery import RecoveryConfig
 from pyclash.tasks.upgrade import MenuDefinition, UpgradeConfig, UpgradeTask, VILLAGE_MENU
 from pyclash.vision.base import MetadataVision
@@ -92,7 +92,9 @@ def build_ctx(transitions, start=VILLAGE, seed=1):
     clock = FakeClock()
     device = FakeDevice([fixture_frame(n) for n in FRAMES], clock, transitions, Capabilities(swipe=True))
     device._index = start
-    return Context(device=device, vision=MetadataVision(), clock=clock, rng=random.Random(seed))
+    ctx = Context(device=device, vision=MetadataVision(), clock=clock, rng=random.Random(seed))
+    ctx.gold_reserve.update(1, 1, clock.now())  # reserva pequeña ya leída: estas pruebas no tratan de la reserva (#32)
+    return ctx
 
 
 def route(source, target, region=None):
@@ -333,6 +335,7 @@ def run_adversarial(seed, *names, rows=None):
     rng = random.Random(seed)
     device = AdversarialDevice([fixture_frame(n) for n in FRAMES], clock, rng, BASE)
     ctx = Context(device=device, vision=MetadataVision(), clock=clock, rng=random.Random(seed))
+    ctx.gold_reserve.update(1, 1, clock.now())
     task = make_task(FakeVillage(vstate(2)), settings(*names), rows=rows, max_attempts=4)
     run_task(task, ctx)
     return device
@@ -367,6 +370,79 @@ def test_the_adversarial_property_detects_a_broken_title_check(monkeypatch):
         device = run_adversarial(seed, "Cannon")
         caught += any(any(r.contains(x, y) for r in FORBIDDEN.get(i, [])) for i, x, y in device.taps)
     assert caught > 0
+
+
+# --------------------------------------------------------------------------- reserva de oro (#32)
+
+class StubCostReader:
+    """Sustituye a ReadSearchCost: anota las llamadas y, si `cost`, deja la reserva leída."""
+
+    def __init__(self, cost=None):
+        self.cost, self.calls = cost, 0
+
+    def run(self, ctx):
+        self.calls += 1
+        if self.cost is None:
+            return TaskResult.failed("sin lectura")
+        ctx.gold_reserve.update(self.cost, self.cost, ctx.clock.now())
+        return TaskResult.done()
+
+
+def archer_tower_task(reader):
+    task = make_task(FakeVillage(vstate(2), vstate(2), vstate(1)), settings("Archer Tower"))
+    task.cost_reader = reader
+    return task
+
+
+def test_sesion_nueva_lee_el_coste_antes_de_decidir_sobre_oro():  # R2
+    ctx = build_ctx(BASE + [route(PANEL, DIALOG, PANEL_ROWS), route(DIALOG, VILLAGE, CONFIRM)])
+    ctx.gold_reserve.costs = None
+    reader = StubCostReader(cost=1)
+    result = run_task(archer_tower_task(reader), ctx)
+    assert reader.calls == 1 and result.outcome is Outcome.DONE
+
+
+def test_coste_con_mas_de_60_minutos_se_vuelve_a_leer():  # R2
+    ctx = build_ctx(BASE + [route(PANEL, DIALOG, PANEL_ROWS), route(DIALOG, VILLAGE, CONFIRM)])
+    ctx.clock.sleep(3601)
+    reader = StubCostReader(cost=1)
+    run_task(archer_tower_task(reader), ctx)
+    assert reader.calls == 1
+
+
+def test_coste_reciente_no_se_vuelve_a_leer():
+    ctx = build_ctx(BASE + [route(PANEL, DIALOG, PANEL_ROWS), route(DIALOG, VILLAGE, CONFIRM)])
+    reader = StubCostReader(cost=1)
+    run_task(archer_tower_task(reader), ctx)
+    assert reader.calls == 0
+
+
+def test_sin_constructor_libre_no_se_lee_el_coste():
+    ctx = build_ctx(BASE)
+    ctx.gold_reserve.costs = None
+    reader = StubCostReader(cost=1)
+    task = make_task(FakeVillage(vstate(1)), settings("Archer Tower"))
+    task.cost_reader = reader
+    run_task(task, ctx)
+    assert reader.calls == 0 and taps(ctx) == []
+
+
+def test_si_la_lectura_falla_no_se_gasta_oro():  # R2
+    ctx = build_ctx(BASE + [route(PANEL, DIALOG, PANEL_ROWS), route(DIALOG, VILLAGE, CONFIRM)])
+    ctx.gold_reserve.costs = None
+    reader = StubCostReader(cost=None)
+    started = collect(ctx, ImprovementStarted)
+    result = run_task(archer_tower_task(reader), ctx)
+    assert reader.calls == 1  # un solo intento por pasada
+    assert result.outcome is not Outcome.DONE and started == []
+
+
+def test_la_reserva_alta_impide_una_mejora_de_oro_que_cabria_sin_ella():  # R1
+    ctx = build_ctx(BASE + [route(PANEL, DIALOG, PANEL_ROWS), route(DIALOG, VILLAGE, CONFIRM)])
+    ctx.gold_reserve.update(10_000, 10_000, ctx.clock.now())  # umbral 760 000: no cabe con 11 000 de oro
+    started = collect(ctx, ImprovementStarted)
+    result = run_task(archer_tower_task(StubCostReader()), ctx)
+    assert started == [] and result.outcome is not Outcome.DONE
 
 
 # --------------------------------------------------------------------------- solo el filtro del juego
