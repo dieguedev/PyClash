@@ -124,7 +124,7 @@ def test_reserva_activa_sin_mejoras_pendientes_usan_cualquier_libre():
 
 
 def test_reserva_desactivada_los_muros_van_al_final():
-    s = WallSettings(enabled=frozenset({"gold"}))
+    s = WallSettings(enabled=frozenset({"gold"}), reserve_builder_for_walls=False)
     assert decide_walls(state(gold=5 * M, builders=1, pending=True), s).resource is None
     assert decide_walls(state(gold=5 * M, builders=1, pending=None), s).resource is None
     assert decide_walls(state(gold=5 * M, builders=1, pending=False), s).resource == "gold"
@@ -249,3 +249,7 @@ def test_fila_ilegible_no_cuenta():
 
 def test_lote_vacio_nunca_verifica():
     assert not verified_in_panel(30, 1000, 0, None, None, False, True)
+
+
+def test_la_reserva_de_constructor_para_muros_esta_activa_por_defecto():  # R5
+    assert WallSettings().reserve_builder_for_walls is True

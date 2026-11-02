@@ -25,7 +25,7 @@ from ..vision.result import Match, crop
 from ..vision.text import DIGITS, TEXT_COLORS, DigitReader, TextFinder, render_text
 from ..vision.vocabulary import Vocabulary
 from .layout import scaled_font_px
-from .level_badge import read_level
+from .level_badge import read_any_level, read_level
 from .panel_layout import FILTER_BUTTON, VILLAGE_PANEL, PanelLayout
 
 Resource = Literal["gold", "elixir", "dark_elixir", "gems"]
@@ -251,7 +251,9 @@ class PanelReader:
             affordable = True
         kind: Kind = "wall" if name == "Wall" else "hero" if name in self._heroes else "new_building" if new else "upgrade"
         cx = int(w * (lay.name_x[0] + 0.04))
-        level = read_level(image, name_y) if name == "Wall" else None
+        # La insignia es el nivel AL QUE SE MEJORA. Solo se lee en muros (2-4) y en el Ayuntamiento (2-9; el «10» tiene
+        # dos dígitos y no se lee): sin número reconocido, la política no sube el Ayuntamiento.
+        level = read_level(image, name_y) if name == "Wall" else read_any_level(image, name_y) if name == "Town Hall" else None
         return PanelRow(
             name, quantity, cost, a.resource if cost is not None else None, a.free, new, duration, affordable,
             kind, section, (cx, name_y), a.y, min(name_conf, cost_conf), level,

@@ -4,11 +4,12 @@ La captura trae filas con nivel 2 (Gold Mine, Elixir Collector ×2, Bomb), 3 (Wa
 """
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from pyclash.policy.walls import ELIXIR_MIN_LEVEL, gold_only_level
 from pyclash.screens.level_badge import read_any_level, read_level
-from pyclash.screens.town_hall import offers_town_hall_10
+from pyclash.screens.town_hall import offers_town_hall_10, read_town_hall_level
 from pyclash.screens.panel_layout import PANEL_PROFILES
 from pyclash.screens.upgrade_panel import PanelReader
 
@@ -110,3 +111,93 @@ def test_detecta_la_tarjeta_del_ayuntamiento_10_y_solo_esa():
 
 def test_a_otra_escala_el_detector_del_th10_dice_no_se():
     assert offers_town_hall_10(np.zeros((720, 1280, 3), np.uint8)) is None
+
+
+def _hud_con(level: int, size=(1765, 993)):
+    """Fotograma sintético con el icono del Ayuntamiento `level` pegado donde lo dibuja el perfil del HUD."""
+    import pyclash.screens.town_hall as th
+
+    image = np.full((size[1], size[0], 3), (60, 110, 40), np.uint8)
+    icon = th._level_templates()[level]
+    image[40 : 40 + icon.shape[0], 25 : 25 + icon.shape[1]] = icon
+    return image
+
+
+def test_lee_el_nivel_del_ayuntamiento_en_el_perfil_de_la_aldea_real():
+    assert read_town_hall_level(capture("village_th9.png")) == 9
+
+
+@pytest.mark.parametrize("level", [2, 3, 4, 5, 6, 9])
+def test_lee_cada_nivel_con_plantilla(level):
+    assert read_town_hall_level(_hud_con(level)) == level
+
+
+@pytest.mark.parametrize("size", [(1766, 993), (1765, 993), (1763, 990), (1762, 989)])
+def test_tolera_las_pequenas_diferencias_de_tamano_de_la_ventana(size):
+    assert read_town_hall_level(_hud_con(9, size)) == 9
+
+
+def test_sin_hud_o_sin_plantilla_es_duda_nunca_otro_nivel():
+    # panel abierto: el HUD no se dibuja
+    assert read_town_hall_level(capture("panel_levels_2_to_8.png")) is None
+    # fondo liso: ninguna plantilla encaja
+    assert read_town_hall_level(np.full((993, 1766, 3), (60, 110, 40), np.uint8)) is None
+
+
+def test_a_otra_escala_el_lector_de_nivel_dice_no_se():
+    assert read_town_hall_level(capture("main_village.png")) is None
+    assert read_town_hall_level(np.zeros((720, 1280, 3), np.uint8)) is None
+
+
+def test_dos_niveles_parecidos_no_se_adivinan(monkeypatch):
+    import pyclash.screens.town_hall as th
+
+    image = _hud_con(4)
+    monkeypatch.setattr(th.cv2, "matchTemplate", lambda *a, **k: np.full((2, 2), 0.95, np.float32))  # todos igual
+    assert th.read_town_hall_level(image) is None
+
+
+def test_el_detector_del_th10_tolera_el_tamano_de_la_ventana():
+    image = np.zeros((989, 1762, 3), np.uint8)
+    assert offers_town_hall_10(image) is False  # fondo liso: seguro que no hay tarjeta
+
+
+def test_el_detector_del_th10_dice_duda_en_la_zona_gris(monkeypatch):
+    import pyclash.screens.town_hall as th
+
+    image = np.zeros((993, 1766, 3), np.uint8)
+    for score, expected in [(0.95, True), (0.85, True), (0.75, None), (0.66, None), (0.65, False), (0.3, False)]:
+        monkeypatch.setattr(th.cv2, "matchTemplate", lambda *a, _s=score, **k: np.full((2, 2), _s, np.float32))
+        assert th.offers_town_hall_10(image) is expected, score
+
+
+def _town_hall_row(name):
+    from pyclash.screens.upgrade_panel import PanelReader
+
+    rows = [r for r in PanelReader().read(capture(name)).rows if r.name == "Town Hall"]
+    assert len(rows) == 1, name
+    return rows[0]
+
+
+@pytest.mark.parametrize("name", ["panel_levels_2_to_8.png", "panel_levels_2_to_8_b.png"])
+def test_el_panel_lee_el_numero_de_la_fila_del_ayuntamiento(name):
+    assert _town_hall_row(name).level == 5  # se sube a TH5: la cuenta está en TH4
+
+
+def test_la_fila_del_th10_no_tiene_numero_legible():
+    assert _town_hall_row("panel_levels_2_to_9_th10.png").level is None
+
+
+def test_la_politica_solo_sube_el_ayuntamiento_con_numero_legible():
+    import random
+
+    from pyclash.policy.upgrades import Mode, UpgradeSettings, UpgradeState, decide_upgrade
+
+    def pick(name, th_level, offers):
+        row = _town_hall_row(name)
+        state = UpgradeState((row,), (10**9,) * 3, 3, th_level=th_level, offers_th10=offers)
+        return decide_upgrade(state, UpgradeSettings(mode=Mode.RUSHER, reserve_builders=0), random.Random(1)).chosen
+
+    assert pick("panel_levels_2_to_8.png", None, False) is not None
+    assert pick("panel_levels_2_to_9_th10.png", 9, True) is None
+    assert pick("panel_levels_2_to_9_th10.png", None, False) is None  # sin número legible no se sube aunque nada diga TH9

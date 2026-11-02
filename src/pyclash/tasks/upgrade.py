@@ -28,11 +28,22 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from ..device.base import Frame
-from ..policy.upgrades import Decision, Mode, Order, UpgradeSettings, UpgradeState, builder_gate, decide_upgrade
+from ..policy.upgrades import (
+    MAX_TOWN_HALL,
+    TOWN_HALL,
+    Decision,
+    Mode,
+    Order,
+    UpgradeSettings,
+    UpgradeState,
+    builder_gate,
+    decide_upgrade,
+)
 from ..runtime.context import Context
-from ..runtime.events import ImprovementStarted, UpgradePlanned, Warning
+from ..runtime.events import AccountFinished, ImprovementStarted, UpgradeDecided, UpgradePlanned, Warning
 from ..screens.classifier import Screen, ScreenClassifier, TextIndicator
 from ..screens.signatures import box
+from ..screens.town_hall import offers_town_hall_10, read_town_hall_level
 from ..screens.upgrade_dialog import GEMS, DialogReader, usable_confirm
 from ..screens.upgrade_panel import PanelRow, PanelScanner, apply_sort
 from ..screens.village import VillageReader
@@ -116,6 +127,8 @@ class UpgradeTask(PanelTask):
             return back
         started = attempts = 0
         last_reason = ""
+        # El HUD solo se dibuja con la aldea a la vista: el nivel del Ayuntamiento se lee antes de abrir el panel.
+        th_level = read_town_hall_level(ctx.device.capture().image)
         while attempts < cfg.max_attempts:
             ctx.check_stop()
             village = self.village.read_state_stable(ctx)
@@ -136,16 +149,40 @@ class UpgradeTask(PanelTask):
                 ctx.events.publish(Warning(reason))
                 self._close(ctx)
                 return TaskResult.blocked(reason)
+            offers = offers_town_hall_10(ctx.device.capture().image)
+            scan_complete = self.last_scan.reached_end
+            if not scan_complete and th_level == MAX_TOWN_HALL and offers is True and rows and all(r.name == TOWN_HALL for r in rows):
+                # Con el filtro del juego solo se lee la primera pantalla. Si parece TH9 maxeado, antes de darlo por
+                # terminado se recorre el panel entero: no puede quedar nada más por debajo.
+                full = self.scanner.scan(ctx, from_top=True)
+                rows, scan_complete = list(full.rows), full.reached_end
             state = UpgradeState(
                 tuple(rows), resources or (None, None, None), free, started, self._cooling(ctx, rows),
                 game_ordered=cfg.game_sort,  # el orden del panel ES el del juego: el bot no reordena
+                th_level=th_level,
+                offers_th10=offers,
+                scan_complete=scan_complete,
             )
             decision = decide_upgrade(state, settings, ctx.rng)
             last_reason = decision.reason
+            if settings.is_dry:
+                ctx.events.publish(
+                    UpgradeDecided(
+                        decision.chosen.name if decision.chosen else None,
+                        decision.reason,
+                        tuple((j.row.name or "?", j.reason.value) for j in decision.rejected),
+                        state.th_level,
+                        state.offers_th10,
+                    )
+                )
+            if decision.finished:
+                ctx.events.publish(AccountFinished(decision.reason))
+                back = self._close(ctx)
+                return back or TaskResult.nothing_to_do(decision.reason, exhausted=True)
             if decision.chosen is None:
                 self._close(ctx)
                 break
-            if settings.mode is Mode.DRY_RUN:
+            if settings.is_dry:
                 ctx.events.publish(UpgradePlanned(decision.chosen.name or "?", decision.reason))
                 back = self._close(ctx)
                 return back or TaskResult(Outcome.DONE, f"dry run: {decision.reason}")
@@ -205,6 +242,11 @@ class UpgradeTask(PanelTask):
         seen = self._reveal(ctx, row)
         if seen is None:
             return self._abort(ctx, row, "la fila ya no se ve en el panel", ctx.device.capture())
+        if row.name == TOWN_HALL and not (seen.level is not None and 2 <= seen.level <= MAX_TOWN_HALL):
+            # La fila localizada ahora debe llevar un número reconocido (2-9). Si no se lee, es duda: no se pulsa.
+            return self._abort(
+                ctx, row, "no se reconoce el número de la fila del Ayuntamiento: no se sube", ctx.device.capture()
+            )
         ctx.device.tap(*seen.center)
         wall_menu_used = False
         for _ in range(2):  # fila -> (menú del muro) -> diálogo: nunca una tercera pulsación a ciegas

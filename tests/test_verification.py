@@ -127,3 +127,12 @@ def test_inactivity_check_reads_the_popup_without_tapping():
     out = run_check(check_by_key("inactivity"), dev, clock=clock)
     assert any("SÍ" in line for line in out.lines) and any("Pulsaría en" in line for line in out.lines)
     assert dev.actions == []
+
+
+def test_upgrade_policy_dry_checks_never_tap_a_row(tmp_path):
+    for key in ("upgrade_dry", "upgrade_rusher_dry"):
+        assert check_by_key(key).risk == "dry"
+        dev, clock = device(fixture_frame("main_village"))
+        out = run_check(check_by_key(key), dev, clock=clock, capture_dir=tmp_path)
+        assert not any(a.kind == "tap" and a.args[1] < 640 and a.args[0] > 941 for a in dev.actions), key
+        assert out.lines, key

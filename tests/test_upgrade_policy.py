@@ -23,12 +23,14 @@ from pyclash.vision.vocabulary import Vocabulary
 RICH = (10_000_000, 10_000_000, 1_000_000)
 
 
-def row(name, cost=1000, resource="gold", kind="upgrade", affordable=True, free=False, y=0):
+def row(name, cost=1000, resource="gold", kind="upgrade", affordable=True, free=False, y=0, level=None, unreadable=False):
     if free:
         cost, resource, affordable = None, None, None
+    if level is None and name == "Town Hall" and not unreadable:
+        level = 5  # la insignia de la fila Town Hall es el nivel al que se sube; por defecto, legible
     return PanelRow(
         name=name, quantity=1, cost=cost, resource=resource, free=free, new=False, duration=None,
-        affordable=affordable, kind=kind, section="other", center=(0, y), y=y,
+        affordable=affordable, kind=kind, section="other", center=(0, y), y=y, level=level,
     )
 
 
@@ -83,30 +85,139 @@ def test_priority_names_ignore_case_and_punctuation():
 
 # --------------------------------------------------------------------------- R2 modos y gasto
 
-def test_maxer_never_picks_the_town_hall():  # E1R2
-    d = decide(state(row("Town Hall", 9_000_000), row("Cannon", 100)), mode=Mode.MAXER)
-    assert name_of(d) == "Cannon"
-    assert d.why_not("Town Hall") == [Reason.MAXER_TOWN_HALL]
-
-
-def test_maxer_with_only_the_town_hall_does_nothing():
-    assert decide(state(row("Town Hall"))).chosen is None
-
-
-def test_rusher_takes_the_town_hall_before_anything_else():
-    d = decide(state(row("Town Hall", 9_000_000), row("Blacksmith")), mode=Mode.RUSHER, priorities=LEVELS)
-    assert name_of(d) == "Town Hall"
-
-
-def test_rusher_without_an_affordable_town_hall_follows_the_normal_rules():
-    d = decide(state(row("Town Hall", affordable=False), row("Cannon")), mode=Mode.RUSHER)
-    assert name_of(d) == "Cannon"
-
-
 def test_dry_run_decides_like_maxer_but_marks_the_decision():
     d = decide(state(row("Town Hall"), row("Cannon", 100)), mode=Mode.DRY_RUN)
     assert name_of(d) == "Cannon" and d.dry_run
     assert not decide(state(row("Cannon"))).dry_run
+
+
+# --------------------------------------------------------------------------- #36 Maxer, Rusher y TH9 maxeado
+
+BELOW_TH9 = dict(th_level=6, offers_th10=False)  # TH6 leído y el panel descarta la tarjeta del TH10
+AT_TH9 = dict(th_level=9, offers_th10=True)
+
+
+def test_maxer_skips_the_town_hall_while_other_upgrades_exist():  # E1R1
+    d = decide(state(row("Town Hall", 9_000_000), row("Cannon", 100), **BELOW_TH9), mode=Mode.MAXER)
+    assert name_of(d) == "Cannon"
+    assert d.why_not("Town Hall") == [Reason.OTHER_UPGRADES_FIRST]
+
+
+def test_maxer_offers_the_town_hall_when_nothing_else_is_left():  # E2R1
+    assert name_of(decide(state(row("Town Hall", 9_000_000), **BELOW_TH9), mode=Mode.MAXER)) == "Town Hall"
+
+
+def test_maxer_with_an_unaffordable_town_hall_confirms_nothing_and_says_why():  # E3R1
+    d = decide(state(row("Town Hall", affordable=False), **BELOW_TH9), mode=Mode.MAXER)
+    assert d.chosen is None and d.why_not("Town Hall") == [Reason.NOT_AFFORDABLE]
+
+
+def test_maxer_waits_for_the_town_hall_while_another_upgrade_is_only_unaffordable():
+    d = decide(state(row("Town Hall"), row("Cannon", affordable=False), **BELOW_TH9), mode=Mode.MAXER)
+    assert d.chosen is None and d.why_not("Town Hall") == [Reason.OTHER_UPGRADES_FIRST]
+
+
+def test_maxer_ignores_the_game_order_that_puts_the_town_hall_first():  # E1R1
+    d = decide(state(row("Town Hall", 9_000_000), row("Cannon", 100), game_ordered=True, **BELOW_TH9), mode=Mode.MAXER)
+    assert name_of(d) == "Cannon"
+
+
+def test_rusher_ignores_defenses_before_th9():  # E1R2
+    d = decide(state(row("Cannon", 500), **BELOW_TH9), mode=Mode.RUSHER)
+    assert d.chosen is None and d.why_not("Cannon") == [Reason.NOT_ON_RUSHER_LIST]
+
+
+def test_rusher_upgrades_an_affordable_army_camp():  # E2R2
+    assert name_of(decide(state(row("Army Camp", 500), row("Cannon", 900), **BELOW_TH9), mode=Mode.RUSHER)) == "Army Camp"
+
+
+@pytest.mark.parametrize("name", ["Gold Storage", "Laboratory", "Clan Castle", "Hero Hall", "Dark Spell Factory", "Barracks"])
+def test_rusher_whitelist(name):
+    assert name_of(decide(state(row(name), **BELOW_TH9), mode=Mode.RUSHER)) == name
+
+
+def test_rusher_researches_only_troops_of_the_active_strategy():  # E3R2
+    st = state(row("Archer", 100), row("Giant", 900), **BELOW_TH9)
+    d = decide(st, mode=Mode.RUSHER, rusher_troops=frozenset({"Archer"}))
+    assert name_of(d) == "Archer" and d.why_not("Giant") == [Reason.NOT_ON_RUSHER_LIST]
+
+
+def test_rusher_upgrades_everything_at_th9_like_maxer():  # E4R2
+    rows = (row("Cannon", 500, y=1), row("Gold Mine", 400, y=2), row("Wall", 300, kind="wall", y=3), row("Barbarian King", 800, kind="hero", y=4))
+    d = decide(state(*rows, **AT_TH9), mode=Mode.RUSHER)
+    assert d.chosen is not None and d.why_not("Cannon") == [] and d.why_not("Gold Mine") == []
+
+
+def test_rusher_takes_the_town_hall_as_soon_as_it_can_below_th9():
+    d = decide(state(row("Town Hall", 9_000_000), row("Army Camp"), **BELOW_TH9), mode=Mode.RUSHER)
+    assert name_of(d) == "Town Hall"
+
+
+def test_rusher_without_an_affordable_town_hall_follows_its_list():
+    d = decide(state(row("Town Hall", affordable=False), row("Army Camp"), **BELOW_TH9), mode=Mode.RUSHER)
+    assert name_of(d) == "Army Camp"
+
+
+@pytest.mark.parametrize("mode", [Mode.MAXER, Mode.RUSHER, Mode.DRY_RUN])
+def test_never_upgrades_from_th9_to_th10(mode):  # E1R3
+    d = decide(state(row("Town Hall", 9_000_000), **AT_TH9), mode=mode)
+    assert d.chosen is None and d.why_not("Town Hall") == [Reason.TOWN_HALL_10]
+
+
+@pytest.mark.parametrize(
+    "hud, offers, unreadable",
+    [
+        (6, None, False), (6, True, False),  # número legible, pero la tarjeta del TH10 sin descartar
+        (9, False, False), (9, None, False), (9, True, False),  # el HUD dice TH9: nunca
+        (6, False, True), (None, False, True),  # fila Town Hall sin número reconocido: nunca
+    ],
+)
+@pytest.mark.parametrize("mode", [Mode.MAXER, Mode.RUSHER])
+def test_uncertain_town_hall_level_upgrades_nothing(mode, hud, offers, unreadable):  # E2R3
+    d = decide(state(row("Town Hall", unreadable=unreadable), th_level=hud, offers_th10=offers), mode=mode)
+    assert d.chosen is None and not d.finished
+    assert Reason.TOWN_HALL_10 in d.why_not("Town Hall")
+
+
+@pytest.mark.parametrize("hud", [None, 2, 6, 8])  # sin plantilla de TH7/TH8 el HUD puede no leerse: no impide subir
+@pytest.mark.parametrize("mode", [Mode.MAXER, Mode.RUSHER])
+def test_a_readable_row_number_is_enough_even_without_the_hud_level(mode, hud):
+    d = decide(state(row("Town Hall", level=8), th_level=hud, offers_th10=False), mode=mode)
+    assert name_of(d) == "Town Hall"
+
+
+@pytest.mark.parametrize("level", [0, 1, 10, 11])
+def test_a_row_number_outside_2_to_9_is_never_upgraded(level):
+    d = decide(state(row("Town Hall", level=level), th_level=None, offers_th10=False), mode=Mode.RUSHER)
+    assert d.chosen is None and d.why_not("Town Hall") == [Reason.TOWN_HALL_10]
+
+
+def test_uncertain_level_does_not_stop_other_upgrades_in_maxer():
+    assert name_of(decide(state(row("Town Hall"), row("Cannon", 100)), mode=Mode.MAXER)) == "Cannon"
+
+
+def test_account_is_finished_when_only_the_town_hall_10_card_remains():  # E1R4
+    d = decide(state(row("Town Hall", 9_000_000), scan_complete=True, **AT_TH9), mode=Mode.MAXER)
+    assert d.finished and d.chosen is None
+
+
+def test_account_is_not_finished_while_walls_remain():  # E2R4
+    d = decide(state(row("Town Hall"), row("Wall", kind="wall"), scan_complete=True, **AT_TH9), mode=Mode.MAXER)
+    assert not d.finished
+
+
+def test_account_is_not_finished_without_the_whole_panel_or_without_th9_confirmed():
+    only_th = row("Town Hall")
+    assert not decide(state(only_th, scan_complete=False, **AT_TH9)).finished
+    assert not decide(state(only_th, scan_complete=True, th_level=None, offers_th10=True)).finished
+    assert not decide(state(only_th, scan_complete=True, th_level=9, offers_th10=None)).finished
+    assert not decide(state(scan_complete=True, **AT_TH9)).finished
+
+
+def test_settings_dry_run_flag_uses_the_rules_of_the_mode():
+    s = UpgradeSettings(mode=Mode.RUSHER, dry_run=True)
+    d = decide_upgrade(state(row("Cannon"), row("Army Camp"), **BELOW_TH9), s, random.Random(1))
+    assert name_of(d) == "Army Camp" and d.dry_run
 
 
 @pytest.mark.parametrize(

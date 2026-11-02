@@ -20,14 +20,15 @@ from ..vision.vocabulary import Vocabulary, normalize
 
 TOWN_HALL = "Town Hall"
 WALL = "Wall"
+MAX_TOWN_HALL = 9  # el MVP termina en TH9: el bot nunca sube a TH10
 
 # Etiquetas de exclusión que el usuario puede activar (interruptores de tareas).
 EXCLUDE_HEROES = "heroes"
 
 
 class Mode(Enum):
-    MAXER = "maxer"  # nunca sube el Ayuntamiento
-    RUSHER = "rusher"  # sube el Ayuntamiento en cuanto puede
+    MAXER = "maxer"  # maxea todo y solo entonces ofrece el Ayuntamiento (nunca TH9 -> TH10)
+    RUSHER = "rusher"  # solo su lista blanca hasta TH9 y sube el Ayuntamiento en cuanto puede (nunca TH9 -> TH10)
     DRY_RUN = "dry_run"  # decide con las reglas de Maxer, pero quien llama no pulsa nada
 
 
@@ -51,8 +52,22 @@ class Reason(Enum):
     COOLDOWN = "en cooldown"
     EXCLUDED = "excluida"
     HEROES_EXCLUDED = "héroes excluidos"
-    MAXER_TOWN_HALL = "Maxer no sube el Ayuntamiento"
+    TOWN_HALL_10 = "el Ayuntamiento no se sube: TH9, o número de la fila o tarjeta del TH10 sin confirmar"
+    OTHER_UPGRADES_FIRST = "Maxer: quedan otras mejoras antes del Ayuntamiento"
+    NOT_ON_RUSHER_LIST = "fuera de la lista del Rusher"
     WALL_BATCH = "los muros van por lotes"
+
+
+# Lo que el Rusher mejora antes de TH9 (nombres canónicos de data/vocabulary.json). El Ayuntamiento va aparte: lo sube
+# en cuanto puede. Defensas, minas, recolectores, muros, trampas y héroes esperan a TH9.
+RUSHER_WHITELIST: frozenset[str] = frozenset(
+    normalize(n)
+    for n in (
+        "Gold Storage", "Elixir Storage", "Dark Elixir Storage",
+        "Army Camp", "Laboratory", "Clan Castle", "Hero Hall",
+        "Barracks", "Dark Barracks", "Spell Factory", "Dark Spell Factory",
+    )
+)
 
 
 @dataclass(frozen=True)
@@ -64,6 +79,12 @@ class UpgradeSettings:
     priorities: tuple[tuple[str, ...], ...] = ()  # niveles de nombres canónicos
     fallback: Fallback = Fallback.ANY
     excluded: frozenset[str] = frozenset()  # etiquetas desactivadas (p. ej. EXCLUDE_HEROES)
+    rusher_troops: frozenset[str] = frozenset()  # tropas de la estrategia activa que el Rusher también mejora
+    dry_run: bool = False  # simulacro con las reglas de `mode` (Mode.DRY_RUN es el simulacro con reglas de Maxer)
+
+    @property
+    def is_dry(self) -> bool:
+        return self.dry_run or self.mode is Mode.DRY_RUN
 
 
 @dataclass(frozen=True)
@@ -77,6 +98,12 @@ class UpgradeState:
     # True: el filtro del juego se aplicó y se comprobó que el panel quedó ordenado por coste, así que el orden
     # de `rows` ES el orden de la alternativa y no se vuelve a ordenar.
     game_ordered: bool = False
+    # Nivel del Ayuntamiento leído del perfil del HUD con la aldea a la vista. None: no se pudo confirmar (duda).
+    th_level: int | None = None
+    # ¿El panel ofrece la tarjeta del TH10? None: no se pudo saber. El Ayuntamiento solo se elige si es False.
+    offers_th10: bool | None = None
+    # True: el panel se recorrió entero, así que `rows` es todo lo que queda por mejorar.
+    scan_complete: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,9 +119,16 @@ class Decision:
     rejected: tuple[Rejection, ...] = ()
     tier: int | None = None  # nivel de prioridad (0 = primero); None si fue Ayuntamiento o alternativa
     dry_run: bool = False  # quien llama describe la decisión en vez de ejecutarla
+    finished: bool = False  # TH9 maxeado: solo queda la tarjeta del TH10, que nunca se pulsa
 
     def why_not(self, name: str) -> list[Reason]:
         return [r.reason for r in self.rejected if r.row.name == name]
+
+
+# Filas que ahora no se pueden empezar pero siguen por mejorar: cuentan como «quedan otras mejoras».
+_STILL_PENDING = frozenset(
+    {Reason.NOT_AFFORDABLE, Reason.INSUFFICIENT, Reason.UNKNOWN_RESOURCE, Reason.COOLDOWN, Reason.GEMS}
+)
 
 
 def _amount(resources: tuple[int | None, int | None, int | None], resource: str | None) -> int | None:
@@ -115,6 +149,8 @@ def _screen(row: PanelRow, settings: UpgradeSettings, state: UpgradeState) -> Re
             return Reason.EXCLUDED
     if row.name in state.on_cooldown:
         return Reason.COOLDOWN
+    if settings.mode is Mode.RUSHER and state.th_level != MAX_TOWN_HALL and not _rusher_allows(row, settings):
+        return Reason.NOT_ON_RUSHER_LIST
     if row.resource == "gems":
         return Reason.GEMS
     if row.affordable is False:
@@ -125,9 +161,33 @@ def _screen(row: PanelRow, settings: UpgradeSettings, state: UpgradeState) -> Re
         have = _amount(state.resources, row.resource)
         if have is not None and row.cost > have:
             return Reason.INSUFFICIENT
-    if row.name == TOWN_HALL and settings.mode is not Mode.RUSHER:
-        return Reason.MAXER_TOWN_HALL
+    # Nunca TH9 -> TH10: el Ayuntamiento solo se elige si la fila está localizada y su número (el nivel al que se sube)
+    # se reconoció y es 2-9, el HUD no dice TH9 y el panel descarta con seguridad la tarjeta del TH10. Cualquier duda
+    # (fila sin número, nivel sin leer, lectura None) es «no se sube».
+    if row.name == TOWN_HALL and not (
+        row.level is not None
+        and 2 <= row.level <= MAX_TOWN_HALL
+        and state.th_level != MAX_TOWN_HALL
+        and state.offers_th10 is False
+    ):
+        return Reason.TOWN_HALL_10
     return None
+
+
+def _rusher_allows(row: PanelRow, settings: UpgradeSettings) -> bool:
+    name = normalize(row.name or "")
+    return name == normalize(TOWN_HALL) or name in RUSHER_WHITELIST or name in {normalize(t) for t in settings.rusher_troops}
+
+
+def _is_finished(state: UpgradeState) -> bool:
+    """TH9 maxeado: TH9 confirmado, el panel entero visto y lo único que queda es la tarjeta del TH10 (sin muros ni nada más)."""
+    return (
+        state.th_level == MAX_TOWN_HALL
+        and state.offers_th10 is True
+        and state.scan_complete
+        and bool(state.rows)
+        and all(r.name == TOWN_HALL for r in state.rows)
+    )
 
 
 def _ranked(rows: Sequence[PanelRow], order: Order) -> list[PanelRow]:
@@ -148,10 +208,13 @@ def builder_gate(state: UpgradeState, settings: UpgradeSettings) -> str | None:
 
 
 def decide_upgrade(state: UpgradeState, settings: UpgradeSettings, rng: random.Random) -> Decision:
-    dry = settings.mode is Mode.DRY_RUN
+    dry = settings.is_dry
 
     def none(reason: str, rejected: Iterable[Rejection] = ()) -> Decision:
         return Decision(None, reason, tuple(rejected), dry_run=dry)
+
+    if _is_finished(state):
+        return Decision(None, "TH9 maxeado: solo queda el Ayuntamiento 10 y no se sube", dry_run=dry, finished=True)
 
     blocked = builder_gate(state, settings)
     if blocked:
@@ -165,6 +228,17 @@ def decide_upgrade(state: UpgradeState, settings: UpgradeSettings, rng: random.R
             eligible.append(row)
         else:
             rejected.append(Rejection(row, reason))
+    if settings.mode is not Mode.RUSHER and any(r.name == TOWN_HALL for r in eligible):
+        # Maxer (y el simulacro): el Ayuntamiento solo cuando no queda otra mejora, pendiente aunque ahora no se pueda pagar.
+        pending = [r for r in eligible if r.name != TOWN_HALL and r.kind not in ("wall", "new_building")]
+        pending += [
+            j.row for j in rejected
+            if j.reason in _STILL_PENDING and j.row.name != TOWN_HALL and j.row.kind not in ("wall", "new_building")
+        ]
+        if pending:
+            for r in [r for r in eligible if r.name == TOWN_HALL]:
+                eligible.remove(r)
+                rejected.append(Rejection(r, Reason.OTHER_UPGRADES_FIRST))
     if not eligible:
         return none("ninguna fila elegible", rejected)
 

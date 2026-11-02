@@ -60,7 +60,7 @@ class WallSettings:
     # Recursos con los que la tarea sabe pagar. Primera entrega: solo oro (la pantalla de pago con elixir
     # aún no está reconocida); la política respeta la preferencia dentro de lo habilitado.
     enabled: frozenset[Resource] = frozenset({"gold", "elixir"})
-    reserve_builder_for_walls: bool = False
+    reserve_builder_for_walls: bool = True  # activa por defecto (Maxer): el lote necesita un constructor libre, no lo ocupa
     interval_min_s: float = 600.0  # ataque entre ventanas de muros: 10-15 min al azar
     interval_max_s: float = 900.0
 

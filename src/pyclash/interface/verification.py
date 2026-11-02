@@ -278,6 +278,14 @@ def _upgrade(mode: Mode) -> Callable[[Context, Path], CheckOutcome]:
     return run
 
 
+def _upgrade_rusher_dry(ctx: Context, directory: Path) -> CheckOutcome:
+    """Simulacro con las reglas del Rusher: qué elegiría, qué descarta y por qué, y si daría la cuenta por terminada."""
+    settings = UpgradeSettings(mode=Mode.RUSHER, dry_run=True, reserve_builders=0)
+    out = _run_task(UpgradeTask(UpgradeConfig(settings=settings, capture_dir=directory)), ctx)
+    out.lines.append(_DRY_NOTE)
+    return out
+
+
 def _walls(dry_run: bool) -> Callable[[Context, Path], CheckOutcome]:
     def run(ctx: Context, directory: Path) -> CheckOutcome:
         # Sin orquestador, lo que este normalmente le da a la tarea se da aquí: no hay mejoras pendientes que
@@ -337,6 +345,7 @@ CHECKS: tuple[Check, ...] = (
     Check("capture", "Guardar captura", "read", "Guarda la pantalla actual en captures_raw/ (ignorado por git).", _check_capture),
     Check("panel", "Leer panel Buildings & Heroes", "dry", "Abre el panel, lista las filas con coste y color, y lo cierra.", _check_panel),
     Check("upgrade_dry", "Mejora (Dry run)", "dry", "Decide qué mejoraría y lo registra; no pulsa ninguna fila.", _upgrade(Mode.DRY_RUN)),
+    Check("upgrade_rusher_dry", "Mejora Rusher (Dry run)", "dry", "Decide como Rusher (lista blanca hasta TH9) y lista lo que descarta y por qué, con el TH leído; no pulsa ninguna fila.", _upgrade_rusher_dry),
     Check("walls_dry", "Muros (Dry run)", "dry", "Calcula el lote de muros y lo registra; no lo arma.", _walls(True)),
     Check("build_dry", "Construir (Dry run)", "dry", "Decide qué edificio nuevo compraría; no lo coloca.", _build(True)),
     Check("upgrade", "Mejorar (REAL)", "spend", "Inicia mejoras de verdad (modo Maxer): gasta oro/elixir.", _upgrade(Mode.MAXER)),

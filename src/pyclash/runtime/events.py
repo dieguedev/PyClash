@@ -62,6 +62,24 @@ class WallBatchStep(Event):
 
 
 @dataclass(frozen=True)
+class UpgradeDecided(Event):
+    """Lo que decidió la política de mejoras y por qué; `rejected` lleva (fila, motivo) de cada fila descartada."""
+
+    chosen: str | None
+    reason: str
+    rejected: tuple[tuple[str, str], ...] = ()
+    th_level: int | None = None
+    offers_th10: bool | None = None
+
+
+@dataclass(frozen=True)
+class AccountFinished(Event):
+    """TH9 maxeado: no queda nada que mejorar salvo el Ayuntamiento 10, que el bot nunca sube."""
+
+    reason: str
+
+
+@dataclass(frozen=True)
 class LootObtained(Event):
     resources: dict[str, int]
 

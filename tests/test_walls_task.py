@@ -192,7 +192,11 @@ def test_sin_constructor_libre_ni_se_abre_el_panel():
 
 
 def test_con_las_mejoras_pendientes_los_muros_esperan():
-    task, ctx = make(inputs=lambda c: WallInputs(gold_floor=1000, upgrades_pending=True))
+    config = WallConfig(
+        settings=WallSettings(reserve_builder_for_walls=False),
+        settle_s=0.1, open_timeout_s=1.0, recovery=RecoveryConfig(settle_seconds=0.1),
+    )
+    task, ctx = make(inputs=lambda c: WallInputs(gold_floor=1000, upgrades_pending=True), config=config)
     result = run_task(task, ctx)
     assert result.outcome is Outcome.NOTHING_TO_DO and "mejoras" in result.reason and taps(ctx) == []
 

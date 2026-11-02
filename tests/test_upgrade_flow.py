@@ -414,3 +414,106 @@ def test_with_the_game_filter_only_the_first_page_is_read_and_nothing_scrolls(mo
     assert task._scan_options() == {} # aún sin aplicar
     task._sort_applied = True
     assert task._scan_options()["max_steps"] == 0
+
+
+# --------------------------------------------------------------------------- #36: Maxer/Rusher y TH9 maxeado
+
+def _th_row(name="Town Hall", cost=1000, **kw):
+    from test_upgrade_policy import row
+
+    return row(name, cost, **kw)  # el Ayuntamiento lleva por defecto una insignia «5» legible
+
+
+def test_dry_run_reports_every_rejection_with_its_reason_and_the_th_readings(monkeypatch):
+    from pyclash.runtime.events import UpgradeDecided
+
+    monkeypatch.setattr("pyclash.tasks.upgrade.read_town_hall_level", lambda image: 6)
+    monkeypatch.setattr("pyclash.tasks.upgrade.offers_town_hall_10", lambda image: False)
+    ctx = build_ctx(BASE)
+    decided = collect(ctx, UpgradeDecided)
+    rows = [_th_row("Cannon", 500), _th_row("Army Camp", 400)]
+    task = make_task(FakeVillage(vstate(2)), UpgradeSettings(mode=Mode.RUSHER, dry_run=True), rows=rows)
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE
+    assert decided[0].chosen == "Army Camp" and decided[0].th_level == 6 and decided[0].offers_th10 is False
+    assert ("Cannon", "fuera de la lista del Rusher") in decided[0].rejected
+    assert not any(PANEL_ROWS.contains(*t) or CONFIRM.contains(*t) for t in taps(ctx))
+
+
+def test_th9_maxed_publishes_account_finished_and_presses_nothing(monkeypatch):
+    from pyclash.runtime.events import AccountFinished
+
+    monkeypatch.setattr("pyclash.tasks.upgrade.read_town_hall_level", lambda image: 9)
+    monkeypatch.setattr("pyclash.tasks.upgrade.offers_town_hall_10", lambda image: True)
+    ctx = build_ctx(BASE)
+    finished = collect(ctx, AccountFinished)
+    result = run_task(make_task(FakeVillage(vstate(2)), UpgradeSettings(mode=Mode.RUSHER), rows=[_th_row("Town Hall", 9_000_000)]), ctx)
+    assert len(finished) == 1 and "TH9 maxeado" in finished[0].reason
+    assert result.outcome is Outcome.NOTHING_TO_DO and result.exhausted
+    assert not any(PANEL_ROWS.contains(*t) or CONFIRM.contains(*t) for t in taps(ctx))
+
+
+def test_unreadable_town_hall_level_never_finishes_the_account_nor_presses_the_town_hall():
+    from pyclash.runtime.events import AccountFinished
+
+    ctx = build_ctx(BASE)  # las capturas son de 1280×720: ni TH9 ni la tarjeta TH10 se pueden leer
+    finished = collect(ctx, AccountFinished)
+    run_task(make_task(FakeVillage(vstate(2)), UpgradeSettings(mode=Mode.RUSHER), rows=[_th_row("Town Hall", 9_000_000)]), ctx)
+    assert finished == []
+    assert not any(PANEL_ROWS.contains(*t) for t in taps(ctx))
+
+
+def test_first_screen_only_is_confirmed_with_a_full_scan_before_finishing(monkeypatch):
+    """Con el filtro del juego se lee una sola pantalla: antes de dar la cuenta por terminada se recorre el panel entero."""
+    from pyclash.runtime.events import AccountFinished
+
+    monkeypatch.setattr("pyclash.tasks.upgrade.read_town_hall_level", lambda image: 9)
+    monkeypatch.setattr("pyclash.tasks.upgrade.offers_town_hall_10", lambda image: True)
+    calls = []
+
+    class Scanner:
+        def scan(self, ctx, **kw):
+            calls.append(kw)
+            first = len(calls) == 1  # la primera lectura es de una pantalla; la segunda recorre el panel y no halla más
+            return PanelScan((_th_row("Town Hall", 9_000_000),), 0 if first else 3, not first, None, "")
+
+    ctx = build_ctx(BASE)
+    finished = collect(ctx, AccountFinished)
+    cfg = UpgradeConfig(settings=UpgradeSettings(mode=Mode.RUSHER), game_sort=False, settle_s=0.1,
+                        recovery=RecoveryConfig(settle_seconds=0.1))
+    task = UpgradeTask(cfg, scanner=Scanner(), dialogs=CachingDialogs(), village=FakeVillage(vstate(2)))
+    run_task(task, ctx)
+    assert len(calls) == 2 and "max_steps" not in calls[1]  # la segunda lectura recorre el panel entero
+    assert len(finished) == 1
+
+
+def test_town_hall_row_is_not_pressed_if_its_number_is_not_recognized_when_revealed(monkeypatch):
+    """Antes de pulsar, la fila localizada de nuevo debe llevar un número reconocido (2-9); si no, es duda."""
+    from dataclasses import replace
+
+    monkeypatch.setattr("pyclash.tasks.upgrade.read_town_hall_level", lambda image: None)
+    monkeypatch.setattr("pyclash.tasks.upgrade.offers_town_hall_10", lambda image: False)
+    row = _th_row("Town Hall", 9_000_000)
+
+    class Scanner:
+        def scan(self, ctx, **kw):
+            return PanelScan((row,), 0, True, None, "")
+
+        def reveal(self, ctx, r):
+            return replace(r, level=None)  # al volver a localizarla, el número ya no se reconoce
+
+    ctx = build_ctx(BASE + [route(PANEL, DIALOG, PANEL_ROWS)])
+    cfg = UpgradeConfig(settings=UpgradeSettings(mode=Mode.RUSHER), game_sort=False, settle_s=0.1,
+                        recovery=RecoveryConfig(settle_seconds=0.1))
+    task = UpgradeTask(cfg, scanner=Scanner(), dialogs=CachingDialogs(), village=FakeVillage(vstate(2)))
+    result = run_task(task, ctx)
+    assert not any(PANEL_ROWS.contains(*t) or CONFIRM.contains(*t) for t in taps(ctx))
+    assert result.outcome is not Outcome.DONE
+
+
+def test_town_hall_row_without_a_recognized_number_is_never_chosen(monkeypatch):
+    monkeypatch.setattr("pyclash.tasks.upgrade.read_town_hall_level", lambda image: 6)
+    monkeypatch.setattr("pyclash.tasks.upgrade.offers_town_hall_10", lambda image: False)
+    ctx = build_ctx(BASE + [route(PANEL, DIALOG, PANEL_ROWS)])
+    run_task(make_task(FakeVillage(vstate(2)), UpgradeSettings(mode=Mode.RUSHER), rows=[_th_row("Town Hall", 9_000_000, unreadable=True)]), ctx)
+    assert not any(PANEL_ROWS.contains(*t) or CONFIRM.contains(*t) for t in taps(ctx))
