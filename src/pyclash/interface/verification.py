@@ -326,7 +326,9 @@ def _build(dry_run: bool) -> Callable[[Context, Path], CheckOutcome]:
 
 
 def _farm(ctx: Context, directory: Path) -> CheckOutcome:
-    return _run_task(FarmTask(FarmConfig(capture_dir=directory)), ctx)
+    # debug/ (en la raíz del proyecto, ignorada por git): una imagen por trazo con lo que dibujó el bot y qué pasó
+    debug = Path(__file__).resolve().parents[3] / "debug"
+    return _run_task(FarmTask(FarmConfig(capture_dir=directory, debug_dir=debug)), ctx)
 
 
 def _search_cost(ctx: Context, directory: Path) -> CheckOutcome:
@@ -371,7 +373,7 @@ CHECKS: tuple[Check, ...] = (
     Check("upgrade", "Mejorar (REAL)", "spend", "Inicia mejoras de verdad (modo Maxer): gasta oro/elixir.", _upgrade(Mode.MAXER)),
     Check("walls", "Muros (REAL)", "spend", "Arma y confirma un lote de muros: gasta elixir.", _walls(False)),
     Check("build", "Construir (REAL)", "spend", "Compra y coloca edificios nuevos: gasta recursos.", _build(False)),
-    Check("farm", "Farmeo (REAL)", "spend", "Busca partida (cuesta oro), ataca con Bárbaros y espera al resultado.", _farm),
+    Check("farm", "Farmeo (REAL)", "spend", "Busca partida (cuesta oro), ataca con el ejército activo (BArch) y espera al resultado.", _farm),
 )
 
 

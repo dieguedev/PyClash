@@ -81,3 +81,19 @@ def test_varios_fotogramas_distintos_de_tamano_o_vacios_no_inventan_una_zona():
     a = fixture_frame("scouting_base").image
     assert read_red_zone_frames([]).zone is None
     assert read_red_zone_frames([a, a[:-10]]).zone is None
+
+
+def test_un_fotograma_limpio_gana_aunque_la_combinacion_acumule_manchas():
+    """Combinar con el máximo también acumula manchas sueltas y puede rechazar una aldea que sola se ve limpia."""
+    import cv2
+    import numpy as np
+
+    from pyclash.screens.red_zone import read_red_zone, read_red_zone_frames
+
+    bright = fixture_frame("scouting_base").image
+    noisy = bright.copy()
+    h, w = noisy.shape[:2]
+    cv2.polylines(noisy, [np.array([(int(.05 * w), int(.5 * h)), (int(.12 * w), int(.8 * h)), (int(.2 * w), int(.55 * h))])], False, (200, 40, 40), 2)
+    assert read_red_zone(noisy).zone is None  # el fotograma con manchas no sirve
+    reading = read_red_zone_frames([noisy, bright, noisy])
+    assert reading.zone is not None and reading.zone.hull == read_red_zone(bright).zone.hull

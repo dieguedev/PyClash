@@ -295,14 +295,46 @@ def test_if_troops_are_left_after_a_trace_it_does_another_until_the_card_is_exha
     assert 1000 <= len(dev.moves) <= 1000 + 60  # y corta en mitad del trazo en cuanto se agota, no al final de la vuelta
 
 
-def test_a_round_that_does_not_lower_the_count_stops_instead_of_spinning_forever():
-    ctx, dev = make(gray_after=10_000)
+def test_a_gesture_that_drags_the_map_is_cut_early_and_retried_a_limited_number_of_times():
+    ctx, dev = make(gray_after=10_000, end_after=10**9)
     task = FarmTask()
-    task.bar.read_count = _counts(50)  # nunca baja: el gesto no despliega
+    task.bar.read_count = _counts(50)  # nunca baja: el gesto arrastra el mapa en vez de desplegar
     warnings = events_of(ctx, Warning)
     run_task(task, ctx)
-    assert len(dev.presses) == 1  # una sola ronda y se para
-    assert any("no despliega" in w.message for w in warnings)
+    retries = task.config.stall_retries
+    assert len(dev.presses) == 1 + retries == len(dev.releases) and not dev.held  # se reintenta y se rinde
+    assert any("arrastra el mapa" in w.message for w in warnings)
+    assert len(dev.moves) < 120 * len(dev.presses)  # cada intento se corta en ~1-1,5 s, no tras 3-4 vueltas (~400 puntos)
+
+
+def test_after_a_stalled_gesture_the_next_trace_is_shifted_with_the_map():
+    from pyclash.screens import camera
+
+    ctx, dev = make(gray_after=10_000, end_after=10**9)
+    task = FarmTask()
+    task.bar.read_count = _counts(50)
+    shifts = iter([(40, -10), (0, 0), (0, 0), (0, 0)])
+    camera_shift = lambda before, after: next(shifts)  # noqa: E731
+    import pyclash.tasks.farm as farm
+
+    original = farm.estimate_shift
+    farm.estimate_shift = camera_shift
+    try:
+        run_task(task, ctx)
+    finally:
+        farm.estimate_shift = original
+    assert task._pan == (40, -10)
+
+
+def test_estimate_shift_measures_how_far_the_map_moved():
+    import numpy as np
+
+    from pyclash.screens.camera import estimate_shift
+
+    img = fixture_frame("scouting_barbarians").image
+    moved = np.roll(np.roll(img, -20, axis=0), 30, axis=1)
+    assert estimate_shift(img, moved) == (30, -20)
+    assert estimate_shift(img, img) == (0, 0)
 
 
 def test_the_number_of_rounds_has_a_cap():
@@ -315,3 +347,47 @@ def test_the_number_of_rounds_has_a_cap():
     run_task(task, ctx)
     assert len(dev.presses) == 3
     assert any("3 rondas" in w.message for w in warnings)
+
+
+def test_barch_assigns_barbarians_and_archers_from_a_bar_with_both():
+    from pyclash.screens.battle_bar import BarReader
+    from pyclash.screens.troops import TroopPortraits, check_army
+
+    image = fixture_frame("two_troops_bar").image
+    cards = BarReader().detect(image)
+    check = check_army(image, list(cards), ARMIES["barch"], TroopPortraits.load_packaged())
+    assert check.ok and list(check.cards) == ["barbarian", "archer"]
+
+
+def test_barch_with_only_barbarians_in_the_bar_deploys_only_barbarians():
+    ctx, dev = make()
+    task = FarmTask()
+    deployed = []
+    task._deploy = lambda ctx, card, zone, size, troop: deployed.append(troop)  # type: ignore[method-assign]
+    task._wait_end = lambda ctx: None  # type: ignore[method-assign]
+    ctx.device.state = "scout"
+    task._attack(ctx, ARMIES["barch"])
+    assert deployed == ["barbarian"]
+
+
+def test_barch_without_any_known_troop_does_not_attack_and_says_why():
+    ctx, dev = make()
+    ctx.device.state = "scout"
+    task = FarmTask()
+    task.portraits.portraits.clear()  # ningún retrato conocido: no se reconoce ninguna carta
+    result = task._attack(ctx, ARMIES["barch"])
+    assert result.outcome is Outcome.FAILED and "ninguna tropa" in result.reason
+    assert not dev.presses
+
+
+def test_each_trace_leaves_a_debug_image_with_the_outcome_in_its_name(tmp_path):
+    ctx, dev = make(gray_after=10_000, end_after=10**9)
+    task = FarmTask(FarmConfig(debug_dir=tmp_path / "debug"))
+    task.bar.read_count = _counts(50)  # el gesto arrastra el mapa
+    run_task(task, ctx)
+    files = sorted((tmp_path / "debug").glob("farm-*.png"))
+    assert len(files) == len(dev.presses) and files
+    assert all("stalled" in f.name for f in files)
+    from PIL import Image
+
+    assert Image.open(files[0]).size == (2 * W, H)  # antes (con el trazo dibujado) | después

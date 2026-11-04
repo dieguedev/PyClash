@@ -94,10 +94,16 @@ def check_army(image: np.ndarray, cards: list[Card], army: Army, portraits: Troo
     for troop in army.troops:
         match = next((c for c, ident in identified if ident.troop == troop and c not in assigned.values()), None)
         if match is None:
+            if not army.strict:
+                continue
             return ArmyCheck(False, reason=f"Troop {troop_name(troop)} not found")
         if match.count == 0:
+            if not army.strict:
+                continue
             return ArmyCheck(False, reason=f"Troop {troop_name(troop)} not found (la carta marca x0)")
         assigned[troop] = match
+    if not assigned:
+        return ArmyCheck(False, reason="no hay ninguna tropa del ejército en la barra: no se ataca")
     others = tuple(sorted({i.troop for c, i in identified if i.troop and i.troop not in army.troops}))
     return ArmyCheck(True, assigned, others=others)
 

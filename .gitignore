@@ -9,3 +9,5 @@ captures_raw/
 config.local.*
 secrets.*
 CLAUDE.md
+# Imágenes de depuración del farmeo (pueden mostrar el nombre del jugador)
+debug/

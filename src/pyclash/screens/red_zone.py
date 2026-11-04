@@ -78,26 +78,6 @@ def _response(image: np.ndarray) -> np.ndarray:
     return cv2.morphologyEx(a, cv2.MORPH_TOPHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel, kernel)))
 
 
-def read_red_zone(image: np.ndarray) -> RedZoneReading:
-    """Zona roja de UN fotograma. El contorno parpadea: para decidir, usa `read_red_zone_frames`."""
-    return _analyse(_response(image), image.shape[0])
-
-
-def read_red_zone_frames(images: list[np.ndarray]) -> RedZoneReading:
-    """Zona roja de VARIOS fotogramas de la misma exploración.
-
-    El contorno rojo parpadea (se desvanece y vuelve): en un fotograma tenue casi no se ve (medido en capturas
-    reales: la pieza mayor baja a ~800 px cuando con el contorno pleno son 2000-9000 y se rechaza una zona
-    válida). Se combina la respuesta de todos los fotogramas quedándose con el MÁXIMO de cada píxel, que es
-    el contorno en su momento más intenso. Los fotogramas deben ser del mismo tamaño y sin mover la cámara.
-    """
-    if not images:
-        return RedZoneReading(None, "no hay fotogramas")
-    if len({i.shape for i in images}) != 1:
-        return RedZoneReading(None, "los fotogramas no tienen el mismo tamaño")
-    return _analyse(np.maximum.reduce([_response(i) for i in images]), images[0].shape[0])
-
-
 def _analyse(response: np.ndarray, h: int) -> RedZoneReading:
     w = response.shape[1]
     scale = h / 720.0
@@ -133,6 +113,38 @@ def _analyse(response: np.ndarray, h: int) -> RedZoneReading:
     hull = cv2.convexHull(np.stack([xs, ys], axis=1).astype(np.int32))[:, 0, :]
     center = (float(xs.mean()), float(ys.mean()))
     return RedZoneReading(RedZone(tuple((int(x), int(y)) for x, y in hull), center, pixels, ratio))
+
+
+def read_red_zone(image: np.ndarray) -> RedZoneReading:
+    """Zona roja de UN fotograma. El contorno parpadea: para decidir, usa `read_red_zone_frames`."""
+    return _analyse(_response(image), image.shape[0])
+
+
+def read_red_zone_frames(images: list[np.ndarray]) -> RedZoneReading:
+    """Zona roja de VARIOS fotogramas de la misma exploración: se queda con la lectura más clara.
+
+    El contorno rojo parpadea (se desvanece y vuelve): en un fotograma tenue casi no se ve (medido en capturas
+    reales: la pieza mayor baja a ~800 px cuando con el contorno pleno son 2000-9000 y se rechaza una zona
+    válida). Se analiza CADA fotograma por separado y además la combinación de todos con el máximo de cada píxel
+    (el contorno en su momento más intenso). Entre las lecturas válidas gana la de mayor proporción aldea /
+    siguiente trozo, o sea la más segura. La combinación sola no basta: al acumular fotogramas también
+    acumula manchas sueltas, que suben «el siguiente trozo» y pueden rechazar una aldea que en un solo
+    fotograma se ve limpia. Los fotogramas deben ser del mismo tamaño y sin mover la cámara.
+    """
+    if not images:
+        return RedZoneReading(None, "no hay fotogramas")
+    if len({i.shape for i in images}) != 1:
+        return RedZoneReading(None, "los fotogramas no tienen el mismo tamaño")
+    h = images[0].shape[0]
+    responses = [_response(i) for i in images]
+    candidates = list(responses)
+    if len(responses) > 1:
+        candidates.append(np.maximum.reduce(responses))
+    readings = [_analyse(r, h) for r in candidates]
+    valid = [r for r in readings if r.zone is not None]
+    if valid:
+        return max(valid, key=lambda r: (min(r.zone.ratio, 1e6), r.zone.pixels))
+    return readings[-1]  # ninguna sirve: el motivo de la combinación es el más representativo
 
 
 __all__ = ["RedZone", "RedZoneReading", "read_red_zone", "read_red_zone_frames"]

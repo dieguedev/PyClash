@@ -27,7 +27,7 @@ El juego debe estar EN INGLÉS (botones y diálogos se leen con la fuente y el v
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -51,6 +51,7 @@ from ..policy.loot import (
 from ..runtime.context import Context
 from ..runtime.events import CaptureSaved, Error, LootObtained, Warning
 from ..screens.battle_bar import BarReader, Card
+from ..screens.camera import estimate_shift
 from ..screens.classifier import Screen, ScreenClassifier, TextIndicator
 from ..screens.escapes import find_escape
 from ..screens.loot import (
@@ -66,6 +67,7 @@ from ..screens.signatures import box
 from ..screens.troops import TroopPortraits, check_army
 from ..vision.ocr import OcrEngine
 from ..vision.text import DigitReader
+from .farm_debug import draw_trace, save_debug
 from .base import Outcome, SessionView, ShouldRun, TaskResult
 from .recovery import RecoveryConfig, RecoverScreen
 
@@ -79,7 +81,7 @@ NEXT_BUTTON = TextIndicator("Next", box(0.89, 0.70, 0.99, 0.78), 38, threshold=0
 
 @dataclass(frozen=True)
 class FarmConfig:
-    army: str = "barbarians"
+    army: str = "barch"
     minimum: LootMinimum = field(default_factory=LootMinimum)  # 0 = ignorado: sin «Next»
     max_skips: int = MAX_SKIPS
     limits: LootLimits = field(default_factory=LootLimits)
@@ -96,13 +98,19 @@ class FarmConfig:
     # trazo por un arrastre del mapa en vez de por un despliegue.
     # La zona roja parpadea: se leen varios fotogramas y se combinan (ver `read_red_zone_frames`).
     max_rounds: int = 8  # trazos nuevos como máximo por carta (cada uno, 3-4 vueltas) hasta agotar las tropas
-    red_zone_frames: int = 6
-    red_zone_interval_s: float = 0.35
+    red_zone_frames: int = 10
+    red_zone_interval_s: float = 0.3
+    red_zone_max_s: float = 12.0  # si con los primeros fotogramas no hay lectura clara, se sigue capturando hasta aquí
     press_hold_min_s: float = 0.3
     press_hold_max_s: float = 0.5
     check_every_s: float = 0.5  # cada cuánto se mira si la carta se agotó durante el trazo
+    # Pasado este tiempo deslizando, el contador de la carta debe haber bajado: si no, el gesto está arrastrando
+    # el mapa (el dedo se apoyó donde el juego no admite despliegue). Se corta ya, no al acabar las 3-4 vueltas.
+    probe_after_s: float = 1.0
+    stall_retries: int = 3  # trazos seguidos que pueden arrastrar el mapa antes de rendirse con esa carta
     battle_timeout_s: float = 220.0  # 3 min de batalla más margen (debe quedar por debajo del cronómetro de inactividad)
     capture_dir: Path | None = None
+    debug_dir: Path | None = None  # si se indica, cada trazo guarda una imagen con lo que dibujó y lo que pasó
     recovery: RecoveryConfig = field(default_factory=RecoveryConfig)
 
 
@@ -138,6 +146,9 @@ class FarmTask:
         self.next_cost: int | None = None
         self._relaxed = RelaxedTracker()
         self._last_tap = -1e9
+        self._trace_sent = 0  # puntos del último trazo que se llegaron a enviar (para la imagen de depuración)
+        self._debug_n = 0
+        self._pan = (0, 0)  # lo que el mapa se movió por trazos que lo arrastraron: la zona roja leída se desplaza igual
 
     def should_run(self, ctx: Context, view: SessionView) -> ShouldRun:
         """Procede mientras algún almacén tenga hueco: con oro y elixir llenos no hay nada que ganar."""
@@ -380,11 +391,19 @@ class FarmTask:
         screen = self.classifier.classify(image).screen
         if screen is not Screen.FINDING_OPPONENT:  # la zona roja solo se lee en la exploración (ver red_zone.py)
             return self._abort(ctx, image, f"se esperaba la exploración y la pantalla es «{screen.value}»: no se despliega nada")
+        # El contorno parpadea y a veces sale muy suave: se leen varios fotogramas y gana el más claro. Si ninguno
+        # sirve se sigue capturando (la exploración dura 30 s) hasta `red_zone_max_s`, sin tocar nada del juego.
         frames = [image]
-        for _ in range(max(0, cfg.red_zone_frames - 1)):
-            ctx.sleep(cfg.red_zone_interval_s)
-            frames.append(ctx.device.capture().image)
-        reading = read_red_zone_frames(frames)
+        started = ctx.clock.now()
+        while True:
+            for _ in range(max(1, cfg.red_zone_frames - 1)):
+                ctx.sleep(cfg.red_zone_interval_s)
+                frames.append(ctx.device.capture().image)
+            reading = read_red_zone_frames(frames)
+            if reading.zone is not None or ctx.clock.now() - started >= cfg.red_zone_max_s:
+                break
+            if self._screen(ctx) is not Screen.FINDING_OPPONENT:  # la exploración terminó mientras se leía
+                break
         if reading.zone is None:
             return self._abort(ctx, image, f"no se pudo leer la zona roja: {reading.reason}")
 
@@ -397,9 +416,12 @@ class FarmTask:
             ctx.events.publish(Warning(f"en la barra también hay {troop_name(other)}, que no es del ejército elegido: no se usa"))
 
         height, width = image.shape[:2]
+        self._pan = (0, 0)
         for troop in army.troops:
             ctx.check_stop()
-            card = check.cards[troop]
+            card = check.cards.get(troop)
+            if card is None:  # ejército no estricto: esa tropa no está en la barra
+                continue
             done = self._deploy(ctx, card, reading.zone, (width, height), troop)
             if done is not None:
                 return done
@@ -439,16 +461,41 @@ class FarmTask:
         gesto no está desplegando nada (p. ej. arrastra el mapa) y seguir solo lo empeoraría.
         """
         cfg = self.config
+        self._card_rect = card.rect
         ctx.device.tap(*card.center)
         ctx.sleep(cfg.select_pause_s)
         ctx.check_stop()
 
         count = self.bar.read_count(ctx.device.capture().image, card.rect)
-        for round_number in range(1, cfg.max_rounds + 1):
-            trace = make_trace(list(zone.hull), size, ctx.rng, cfg.path)
-            if self._run_trace(ctx, card, trace):
-                break
+        stalls = 0
+        round_number = 0
+        while round_number < cfg.max_rounds:
+            round_number += 1
+            before = ctx.device.capture().image
+            trace = make_trace(list(self._panned(zone).hull), size, ctx.rng, cfg.path)
+            outcome = self._run_trace(ctx, card, trace, count)
             image = ctx.device.capture().image
+            self._debug_trace(ctx, troop, round_number, before, image, zone, trace, outcome, count)
+            if outcome == "exhausted":
+                break
+            if outcome == "stalled":
+                stalls += 1
+                self._follow_pan(ctx, before, image)
+                self._save_capture(ctx, image, "farm-no-deploy")
+                if stalls > cfg.stall_retries:
+                    ctx.events.publish(Warning(
+                        f"el gesto arrastra el mapa y no despliega {troop_name(troop)} tras {stalls} intentos: se deja esa tropa"
+                    ))
+                    break
+                ctx.events.publish(Warning(
+                    f"el gesto arrastró el mapa en vez de soltar {troop_name(troop)}: se corrige la zona y se reintenta ({stalls}/{cfg.stall_retries})"
+                ))
+                ctx.sleep(cfg.select_pause_s)
+                ctx.device.tap(*card.center)  # reasegura la carta elegida
+                ctx.sleep(cfg.select_pause_s)
+                round_number -= 1  # un trazo que no desplegó no gasta una de las rondas
+                continue
+            stalls = 0
             left = self.bar.read_count(image, card.rect)
             if count is not None and left is not None and left >= count:
                 ctx.events.publish(Warning(
@@ -462,26 +509,82 @@ class FarmTask:
         ctx.sleep(cfg.select_pause_s)
         return None
 
-    def _run_trace(self, ctx: Context, card: Card, trace) -> bool:
-        """Un trazo: pulsar, esperar quieto, deslizar y soltar. True si la carta se agotó."""
+    def _debug_trace(self, ctx, troop, round_number, before, after, zone, trace, outcome, count) -> None:
         cfg = self.config
-        exhausted = False
-        next_check = ctx.clock.now() + cfg.check_every_s
+        if cfg.debug_dir is None:
+            return
+        try:
+            h, w = before.shape[:2]
+            path = cfg.path
+            shown = self._panned(zone)
+            lines = [
+                f"{troop} ronda {round_number} -> {outcome}; cuenta antes={count} ahora={self.bar.read_count(after, self._card_rect)}",
+                f"puntos enviados {self._trace_sent}/{len(trace.points)}; mapa movido acumulado={self._pan}",
+                f"pulsacion en {trace.points[0]}; limites y {path.top:.2f}-{path.bottom:.2f} x {path.side:.2f}-{1 - path.side:.2f}",
+            ]
+            image = draw_trace(
+                before, after, tuple(shown.hull), trace.points, self._trace_sent,
+                (path.top * h, path.bottom * h, path.side * w, (1 - path.side) * w), lines,
+            )
+            self._debug_n += 1
+            save_debug(cfg.debug_dir, f"farm-{int(ctx.clock.now() * 1000)}-{self._debug_n:02d}-{troop}-r{round_number}-{outcome}", image)
+        except Exception as error:  # la depuración nunca debe romper el ataque
+            ctx.events.publish(Warning(f"no se pudo guardar la imagen de depuración del trazo: {error}"))
+
+    def _panned(self, zone: RedZone) -> RedZone:
+        dx, dy = self._pan
+        if not (dx or dy):
+            return zone
+        hull = tuple((x + dx, y + dy) for x, y in zone.hull)
+        return replace(zone, hull=hull, center=(zone.center[0] + dx, zone.center[1] + dy))
+
+    def _follow_pan(self, ctx: Context, before: np.ndarray, after: np.ndarray) -> None:
+        """Si el trazo movió el mapa, la zona roja leída en la exploración se corre lo mismo."""
+        shift = estimate_shift(before, after)
+        if shift is None:
+            ctx.events.publish(Warning("no se pudo medir cuánto se movió el mapa: la zona roja puede estar desplazada"))
+            return
+        self._pan = (self._pan[0] + shift[0], self._pan[1] + shift[1])
+
+    def _run_trace(self, ctx: Context, card: Card, trace, count: int | None = None) -> Literal["exhausted", "done", "stalled"]:
+        """Un trazo: pulsar, esperar quieto, deslizar y soltar.
+
+        «exhausted»: la carta se agotó. «stalled»: pasado `probe_after_s` el contador no bajó (el gesto arrastra el
+        mapa) y se cortó. «done»: el trazo acabó con tropas todavía en la carta.
+        """
+        cfg = self.config
+        outcome: Literal["exhausted", "done", "stalled"] = "done"
+        started = ctx.clock.now()
+        next_check = started + cfg.check_every_s
+        probed = count is None  # sin contador inicial no se puede sondear
+        self._trace_sent = 0
         ctx.device.press(*trace.points[0])
+        self._trace_sent = 1
         try:
             ctx.sleep(ctx.rng.uniform(cfg.press_hold_min_s, cfg.press_hold_max_s))  # pulsación quieta antes de deslizar
+            slide_start = ctx.clock.now()
             for point, wait in zip(trace.points[1:], trace.waits[1:]):
                 ctx.sleep(wait, step=wait)  # comprueba la parada en cada punto
                 ctx.device.move(*point)
+                self._trace_sent += 1
                 if ctx.clock.now() >= next_check:
                     next_check = ctx.clock.now() + cfg.check_every_s
-                    if self.bar.is_exhausted(ctx.device.capture().image, card.rect):
-                        exhausted = True
+                    image = ctx.device.capture().image
+                    if self.bar.is_exhausted(image, card.rect):
+                        outcome = "exhausted"
                         break  # se descartan las vueltas que quedan
+                    if not probed and ctx.clock.now() - slide_start >= cfg.probe_after_s:
+                        probed = True
+                        now = self.bar.read_count(image, card.rect)
+                        if now is not None and count is not None and now >= count:
+                            outcome = "stalled"
+                            break
         finally:
             if ctx.device.held:
                 ctx.device.release()
-        return exhausted or self.bar.is_exhausted(ctx.device.capture().image, card.rect)
+        if outcome == "done" and self.bar.is_exhausted(ctx.device.capture().image, card.rect):
+            outcome = "exhausted"
+        return outcome
 
     def _wait_end(self, ctx: Context) -> TaskResult:
         """El juego termina la batalla; aquí solo se espera y se vuelve a la aldea por la pantalla de resultado."""

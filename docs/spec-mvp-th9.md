@@ -52,7 +52,7 @@ En cada pasada el bot quita obstáculos, recoge recursos, mejora lo que toca seg
 35. COMO jugador, QUIERO marcar y desmarcar tropas con botones que muestran su imagen, PARA preparar de antemano las tropas de un ejército futuro.
 36. COMO jugador, QUIERO que el bot compruebe que el laboratorio pasó a ocupado tras investigar, PARA no registrar una investigación que no empezó.
 37. COMO jugador, QUIERO que el bot ataque con el ejército que dejé montado, PARA no tener que entrenarlo desde el bot.
-38. COMO jugador, QUIERO guardar una plantilla de ejército en el juego y que el bot la use, PARA reponer tropas sin que el bot lea colas ni cantidades.
+38. COMO jugador, QUIERO dejar montado mi ejército en el juego y que el bot ataque con él, PARA no depender de que el bot entrene, lea colas ni cantidades.
 39. COMO jugador, QUIERO que la estrategia BArch despliegue primero bárbaros en círculos y después arqueras, PARA limpiar los exteriores con las arqueras detrás de los bárbaros.
 40. COMO jugador en un Ayuntamiento 1, QUIERO que el bot ataque solo con bárbaros, PARA usar lo único disponible.
 41. COMO jugador, QUIERO que el bot ataque cuando no tiene nada más que hacer, PARA llenar los almacenes.
@@ -112,7 +112,7 @@ En cada pasada el bot quita obstáculos, recoge recursos, mejora lo que toca seg
 - **Laboratorio**: se identifica cada tropa por su carta en la barra lateral. En Rusher, la lista de tropas a investigar sale de la estrategia activa más un selector de botones con la imagen de cada tropa (marcable y desmarcable). En Maxer se investiga todo. Se verifica que el laboratorio pasa a ocupado.
 - **Obstáculos**: tarea de prioridad máxima al empezar la sesión. Detección por imágenes de los obstáculos comunes a la escala fija de zoom máximo. No ocupa constructor y respeta la reserva de oro. Los obstáculos desconocidos se ignoran.
 - **Zoom**: el zoom-out máximo (rueda del ratón) es el estado normal de la aldea. Se aplica al empezar la sesión, tras cada ataque y tras cada mejora. No se asume dónde queda la cámara, solo la escala.
-- **Ataque**: el jugador monta el ejército en una plantilla guardada en el juego; el bot solo la pulsa tras verificar la pantalla. Estrategia BArch en TH2–TH9 y solo bárbaros en TH1. Ataca cuando no hay nada más que hacer, hasta llenar los almacenes, y después entra en idle. La composición 70 % bárbaros y 30 % arqueras queda anotada como idea futura.
+- **Ataque**: el jugador deja montado su ejército en el juego (sin plantillas); el bot ataca con las tropas que haya en la barra de batalla. Estrategia BArch en TH2–TH9 y solo bárbaros en TH1. Ataca cuando no hay nada más que hacer, hasta llenar los almacenes, y después entra en idle. La composición 70 % bárbaros y 30 % arqueras queda anotada como idea futura.
 - **Recuperar oro**: se mantiene la política actual (recoger minas y atacar las siguientes 3 aldeas sin mínimo de botín), con una nota para revisar su diseño.
 - **Idle**: el orquestador lee el tiempo restante de las obras y espera hasta la que termine antes. La protección ante la ventana de inactividad ya existe.
 - **Avisos por Telegram**:

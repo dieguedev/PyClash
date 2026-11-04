@@ -62,6 +62,6 @@ _Avoid_: Táctica, ejército
 Estrategia que despliega primero los bárbaros en círculos y después las arqueras. Sirve para limpiar los exteriores de la aldea.
 _Avoid_: Barb-Arch
 
-**Plantilla de ejército**:
-Ejército guardado una vez por el jugador en el propio juego, que el bot pulsa para reponer tropas sin entrenarlas él.
-_Avoid_: Quick Train, ejército guardado
+**Ejército activo**:
+Ejército que el jugador deja montado en el propio juego. El bot lo usa tal cual: no lo entrena, no pulsa plantillas ni lee colas, y despliega solo las tropas que haya en la barra de batalla.
+_Avoid_: Plantilla de ejército, Quick Train
