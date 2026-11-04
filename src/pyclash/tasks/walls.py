@@ -178,7 +178,17 @@ class WallBatchTask(PanelTask):
 
     @staticmethod
     def _wall_row(rows: list[PanelRow]) -> PanelRow | None:
-        return next((r for r in rows if r.name == WALL and r.kind == "wall"), None)
+        # Solo las mejoras: la fila «Wall ×N · gratis» de edificios nuevos (muros por colocar) no es un lote de mejora.
+        return next((r for r in rows if r.name == WALL and r.kind == "wall" and not r.new and not r.free), None)
+
+    @staticmethod
+    def _same_wall_row(rows: list[PanelRow], before: PanelRow) -> PanelRow | None:
+        """La fila de muros de ANTES, tras el lote. Hay una fila por nivel de muro (`Wall ×100 · 25 000`, `Wall ×25 · 500`…) y
+        el coste unitario las distingue: si la del lote se agotó, no se debe tomar la siguiente fila «Wall» por ella."""
+        return next(
+            (r for r in rows if r.name == WALL and r.kind == "wall" and not r.new and not r.free and r.cost == before.cost),
+            None,
+        )
 
     # ------------------------------------------------------------------------------ armar y confirmar
 
@@ -310,7 +320,7 @@ class WallBatchTask(PanelTask):
             rows = self._open_and_scan(ctx)
             if isinstance(rows, TaskResult):
                 return False
-            after = self._wall_row(rows)
+            after = self._same_wall_row(rows, before)
             complete = bool(self.last_scan.reached_end)
             verified = verified_in_panel(
                 before.quantity, before.cost, count,

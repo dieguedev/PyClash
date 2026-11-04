@@ -299,6 +299,23 @@ def test_fila_ausente_con_el_panel_sin_recorrer_entero_no_verifica():
     four = _row(4)
     task, ctx = make(readings=[([four], True), ([], False)])
     assert run_task(task, ctx).outcome is Outcome.NOTHING_TO_DO
+def test_si_la_fila_se_agota_otra_fila_wall_de_otro_nivel_no_se_toma_por_ella():
+    """En el panel real hay una fila «Wall» por nivel (`×100 · 25 000`, `×25 · 500`): al agotarse la primera,
+    la siguiente no es «la misma fila con menos muros»."""
+    four = _row(4)
+    other_level = PanelRow("Wall", 25, 500, "gold", False, False, None, True, "wall", None, (1000, 420), 420)
+    task, ctx = make(readings=[([four], True), ([other_level], True)])
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and "4 muros" in result.reason
+
+
+def test_si_otra_fila_wall_tiene_el_mismo_coste_que_la_del_lote_no_hay_verificacion_falsa():
+    four = _row(4)
+    same_cost_other_qty = PanelRow("Wall", 25, 1000, "gold", False, False, None, True, "wall", None, (1000, 420), 420)
+    task, ctx = make(readings=[([four], True), ([same_cost_other_qty], True)])
+    assert run_task(task, ctx).outcome is Outcome.NOTHING_TO_DO  # misma fila, 25 ≠ 4 − 4: no se da por verificada
+
+
 
 
 def test_fila_ausente_con_un_lote_parcial_no_verifica():
