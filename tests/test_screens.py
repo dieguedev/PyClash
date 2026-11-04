@@ -141,6 +141,37 @@ def test_no_false_close_button_on_screens_without_one(name):
     assert find_close_buttons(image_of(name)) == []
 
 
+def _on_grass(patch, at=(300, 200)):
+    image = np.zeros((720, 1280, 3), np.uint8)
+    image[:] = (110, 160, 40)  # hierba
+    y, x = at
+    image[y : y + patch.shape[0], x : x + patch.shape[1]] = patch
+    return image
+
+
+def test_a_red_square_with_a_white_skull_is_not_a_close_button():
+    """Una bomba aérea (cuadrado rojo con calavera blanca) pasa el filtro de color pero no la forma de la «X»."""
+    patch = np.zeros((34, 34, 3), np.uint8)
+    patch[:] = (215, 40, 40)
+    yy, xx = np.mgrid[:34, :34]
+    patch[((yy - 14) ** 2 + (xx - 17) ** 2) <= 64] = (245, 245, 245)  # cráneo
+    patch[24:30, 10:24] = (245, 245, 245)  # mandíbula
+    patch[11:15, 11:15] = (40, 20, 20)  # ojos
+    patch[11:15, 20:24] = (40, 20, 20)
+    assert find_close_buttons(_on_grass(patch)) == []
+
+
+def test_the_real_close_button_is_found_on_the_map_at_any_size():
+    import cv2
+
+    real = image_of("placing_building")
+    (m,) = find_close_buttons(real)
+    button = real[m.rect.y : m.rect.y + m.rect.h, m.rect.x : m.rect.x + m.rect.w]
+    for side in (26, 31, 40, 52):
+        found = find_close_buttons(_on_grass(cv2.resize(button, (side, side), interpolation=cv2.INTER_AREA)))
+        assert len(found) == 1, side
+
+
 def test_empty_terrain_is_a_flat_grass_square():
     image = image_of("main_village")
     found = find_empty_terrain(image)
