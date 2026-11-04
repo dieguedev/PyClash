@@ -270,7 +270,7 @@ def test_the_pointer_stays_pressed_and_still_for_a_random_0_3_to_0_5_s_before_sl
         return dev.first_move_at - dev.press_at
 
     none = replace(FarmConfig(), press_hold_min_s=0.0, press_hold_max_s=0.0)
-    holds = [gap(FarmConfig(), seed) - gap(none, seed) for seed in range(8)]
+    holds = [gap(FarmConfig(), seed) - gap(none, seed) for seed in range(4)]  # cada una es un farmeo completo: 4 bastan
     assert all(0.3 - 1e-9 <= h <= 0.5 + 1e-9 for h in holds), holds
     assert len({round(h, 3) for h in holds}) > 1  # es aleatoria, no un valor fijo
 

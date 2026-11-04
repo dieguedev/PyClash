@@ -13,7 +13,7 @@ from pyclash.vision.base import MetadataVision
 from pyclash.vision.ocr import FakeOcr, WordBox
 
 from helpers import fixture_frame
-from test_farm import W, H, FarmDevice, in_box
+from farm_test import W, H, FarmDevice, in_box
 
 NEXT = (0.89, 0.70, 0.99, 0.78)
 

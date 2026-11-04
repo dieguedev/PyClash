@@ -1,6 +1,6 @@
 """ReadSearchCost (#32): lee el coste de «Find a Match» sin pagar, cierra y actualiza la reserva."""
 
-from test_farm import ATTACK, BATTLE, FIND, TERRAIN, FarmDevice, in_box
+from farm_test import ATTACK, BATTLE, FIND, TERRAIN, FarmDevice, in_box
 
 from pyclash.runtime.clock import FakeClock
 from pyclash.runtime.context import Context

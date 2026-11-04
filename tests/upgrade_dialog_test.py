@@ -5,7 +5,7 @@ import pytest
 from pyclash.screens.upgrade_dialog import DialogReader, usable_confirm
 
 from helpers import fixture_frame
-from test_upgrade_flow import CachingDialogs
+from upgrade_flow_test import CachingDialogs
 
 
 @pytest.fixture(scope="module")

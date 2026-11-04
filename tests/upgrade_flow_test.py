@@ -26,7 +26,7 @@ from pyclash.tasks.upgrade import MenuDefinition, UpgradeConfig, UpgradeTask, VI
 from pyclash.vision.base import MetadataVision
 
 from helpers import fixture_frame
-from test_upgrade_panel import CachingReader
+from upgrade_panel_test import CachingReader
 
 VILLAGE, PANEL, DIALOG, MISSING, WALL_MENU, WALL_DIALOG, REBUILD = range(7)
 FRAMES = ["main_village", "upgrade_panel_filtered", "upgrade_dialog", "missing_gems", "wall_selected",
@@ -495,7 +495,7 @@ def test_with_the_game_filter_only_the_first_page_is_read_and_nothing_scrolls(mo
 # --------------------------------------------------------------------------- #36: Maxer/Rusher y TH9 maxeado
 
 def _th_row(name="Town Hall", cost=1000, **kw):
-    from test_upgrade_policy import row
+    from upgrade_policy_test import row
 
     return row(name, cost, **kw)  # el Ayuntamiento lleva por defecto una insignia «5» legible
 

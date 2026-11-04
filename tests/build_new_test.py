@@ -27,8 +27,8 @@ from pyclash.tasks.recovery import RecoveryConfig
 from pyclash.vision.base import MetadataVision
 
 from helpers import fixture_frame
-from test_upgrade_flow import CachingDialogs, FakeVillage, SinglePageScanner, collect, vstate
-from test_upgrade_panel import CachingReader
+from upgrade_flow_test import CachingDialogs, FakeVillage, SinglePageScanner, collect, vstate
+from upgrade_panel_test import CachingReader
 
 
 def row(name, quantity=1, cost=100, resource="gold", free=False, new=True, duration=60, affordable=True,
