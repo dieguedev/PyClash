@@ -87,6 +87,7 @@ _sig(_user32.GetWindowTextLengthW, ctypes.c_int, _H)
 _sig(_user32.GetWindowTextW, ctypes.c_int, _H, wintypes.LPWSTR, ctypes.c_int)
 _sig(_user32.EnumWindows, wintypes.BOOL, _WNDENUMPROC, wintypes.LPARAM)
 _sig(_user32.EnumChildWindows, wintypes.BOOL, _H, _WNDENUMPROC, wintypes.LPARAM)
+_sig(_user32.GetForegroundWindow, _H)
 _sig(_user32.IsWindow, wintypes.BOOL, _H)
 _sig(_user32.IsWindowVisible, wintypes.BOOL, _H)
 _sig(_user32.IsIconic, wintypes.BOOL, _H)
@@ -271,6 +272,24 @@ class GooglePlayGamesDevice:
     def _top(self) -> int:
         hwnd = self._require()
         return _user32.GetAncestor(hwnd, _GA_ROOT) or hwnd
+
+    def input_window_state(self) -> tuple[Rect, bool] | None:
+        """Área cliente de la superficie en pantalla y si su ventana tiene el foco; `None` si no hay ventana.
+
+        Solo lee: no mueve nada. Lo usa el registro de entradas (#43) para situar los clics del jugador.
+        """
+        hwnd = self._resolve()
+        if not hwnd:
+            return None
+        client = wintypes.RECT()
+        origin = wintypes.POINT(0, 0)
+        if not _user32.GetClientRect(hwnd, ctypes.byref(client)) or not _user32.ClientToScreen(hwnd, ctypes.byref(origin)):
+            return None
+        if client.right <= 0 or client.bottom <= 0:
+            return None
+        top = _user32.GetAncestor(hwnd, _GA_ROOT) or hwnd
+        focused = _user32.GetForegroundWindow() == top
+        return Rect(origin.x, origin.y, client.right, client.bottom), focused
 
     def is_minimized(self) -> bool:
         return bool(_user32.IsIconic(self._top()))

@@ -89,3 +89,25 @@ _Avoid_: Barb-Arch
 **Ejército activo**:
 Ejército que el jugador deja montado en el propio juego. El bot lo usa tal cual: no lo entrena, no pulsa plantillas ni lee colas, y despliega solo las tropas que haya en la barra de batalla.
 _Avoid_: Plantilla de ejército, Quick Train
+
+### Grabación de juego humano
+
+**Sesión de grabación**:
+Una grabación de juego del jugador: el registro de entradas y, si se grabó con OBS, su vídeo. Nada que ver con la **Pasada** de muros: aquí «sesión» no se presta a confusión, pero en el resto del glosario se desaconseja para muros.
+_Avoid_: Partida, grabación suelta
+
+**Registro de entradas**:
+Fichero de texto, un evento por línea, con las pulsaciones y gestos del jugador sobre la ventana del juego durante una sesión de grabación. Solo anota lo que ocurre sobre la ventana con foco; del teclado solo escucha las teclas de control.
+_Avoid_: Log de ratón, keylogger
+
+**Tiempo de vídeo**:
+Segundo del vídeo de OBS en que ocurre un evento del registro de entradas. Solo existe si OBS graba y el registro lo conoce; sin él, el evento solo lleva el tiempo desde el inicio del registro y la hora real.
+_Avoid_: Timestamp, offset
+
+**Marca**:
+Evento que el jugador pone con una tecla durante el registro para localizar después un momento importante, por ejemplo el inicio de un ataque.
+_Avoid_: Marcador, bookmark
+
+**Referencia**:
+Primer clic dentro de la ventana tras empezar el registro, señalado en el fichero para sincronizar a mano con un vídeo si hiciera falta.
+_Avoid_: Clic de sincronización
