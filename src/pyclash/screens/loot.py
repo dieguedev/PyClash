@@ -44,7 +44,9 @@ ENEMY_ROWS = (
 DARK_ICON = box(0.018, 0.187, 0.046, 0.224)
 
 NEXT_COST = box(0.925, 0.76, 0.975, 0.81)
-SEARCH_COST = box(0.15, 0.69, 0.20, 0.75)
+# El contenido del botón («350 🪙») va centrado: con más o menos cifras los dígitos se desplazan (0,12-0,15 con
+# 3 cifras, 0,17-0,195 con 2). La región cubre cualquier longitud; la moneda no se lee como dígito (texto blanco).
+SEARCH_COST = box(0.07, 0.70, 0.23, 0.75)
 HUD_GOLD = box(0.80, 0.015, 0.97, 0.07)
 
 # «You got:» (alineado a la derecha, junto al icono): oro, elixir y oscuro (PROVISIONAL la tercera).
