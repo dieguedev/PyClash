@@ -511,6 +511,11 @@ class PanelScanner:
             return self.reveal(ctx, replace(row, quantity=row.quantity - taken), capture=capture) is not None
         return self.reveal(ctx, row, capture=capture) is None
 
+    def visible(self, ctx: Context, capture: Callable[[], Frame] | None = None) -> list[PanelRow]:
+        """Las filas completas que se ven AHORA en el panel abierto, sin mover nada (una captura)."""
+        grab = capture or ctx.device.capture
+        return list(self.reader.read(grab().image).rows)
+
     def rewind(
         self, ctx: Context, settle: float = 0.4, max_steps: int = 30, capture: Callable[[], Frame] | None = None
     ) -> None:
@@ -579,17 +584,20 @@ class PanelScanner:
         max_steps: int = 30,
         settle: float = 0.4,
         capture: Callable[[], Frame] | None = None,
+        any_quantity: bool = False,
     ) -> PanelRow | None:
         """Vuelve a poner `target` a la vista y devuelve la fila tal y como se ve AHORA (con su posición actual).
 
         Tras `scan` el panel queda desplazado (normalmente al final) y las coordenadas de las filas leídas son
         las de la captura donde se vieron: pulsarlas cae en otra fila. Se mira la pantalla actual, luego se
         sube hasta el principio leyendo cada paso y, si aún no está, se baja desde allí. None si no aparece.
+        Con `any_quantity` la fila se reconoce por nombre y coste aunque su cantidad haya cambiado (los muros
+        mejorados se suman a la fila del nivel siguiente); la devuelta trae la cantidad actual.
         """
         lay = self.reader.layout
         grab = capture or ctx.device.capture
         frame = grab()
-        hit = self._find(frame.image, target)
+        hit = self._find(frame.image, target, any_quantity)
         if hit is not None:
             return hit
         for forward in (False, True):  # primero hasta arriba (se ve lo anterior), luego hacia abajo
@@ -601,16 +609,19 @@ class PanelScanner:
                 if panel_diff(frame.image, nxt.image, lay) < self.end_threshold:
                     break  # extremo del panel
                 frame = nxt
-                hit = self._find(frame.image, target)
+                hit = self._find(frame.image, target, any_quantity)
                 if hit is not None:
                     return hit
         return None
 
-    def _find(self, image: np.ndarray, target: PanelRow) -> PanelRow | None:
+    def _find(self, image: np.ndarray, target: PanelRow, any_quantity: bool = False) -> PanelRow | None:
         for row in self.reader.read(image).rows:
-            if row.name == target.name and row.quantity == target.quantity and (
-                row.cost is None or target.cost is None or row.cost == target.cost
-            ):
+            if row.name != target.name:
+                continue
+            if any_quantity and target.cost is not None:  # por coste exacto: la cantidad puede haber cambiado
+                if row.cost == target.cost:
+                    return row
+            elif row.quantity == target.quantity and (row.cost is None or target.cost is None or row.cost == target.cost):
                 return row
         return None
 

@@ -1,9 +1,11 @@
 """Muros por lotes (issue #13): abrir el panel, recorrer las filas «Wall», armar cada lote, confirmar y verificar.
 
 Una sesión abre el panel UNA vez, hace todos los muros que el dinero permita (todos los niveles: una fila por
-nivel, de más caro a más barato, con el saldo que va quedando) y lo cierra al final. El panel abierto se actualiza
-en directo, así que cada fila se comprueba en el sitio. Si lo mejorado deja muros nuevos en una fila ya hecha,
-una pasada más (relee el panel) los recoge.
+nivel, de más caro a más barato, con el saldo que va quedando) y lo cierra al final. Dentro de una pasada no se
+comprueba nada fila a fila: se pulsa y se sigue, dando por hecho que lo calculado se mejoró. Si tras una pasada ya se
+ven en pantalla filas nuevas (los muros mejorados salen en otra fila al subir de nivel), se trabajan sin subir. Solo
+cuando a la vista no queda nada se vuelve al principio y se relee el panel UNA vez: ahí se verifica cada fila
+(descontando los muros que le llegaron después de la fila del nivel anterior) y se ve lo que no se veía.
 
 La decisión (cuándo, con qué recurso, cuántos) es la política pura `policy/walls.py`; aquí solo está el
 recorrido y su cadena de seguridad:
@@ -15,8 +17,8 @@ recorrido y su cadena de seguridad:
      calculado (`N × coste unitario` de la fila) y el coste NO sale en rojo (se quita un muro, hasta 3 veces);
   4. «Upgrade» abre el modal «Upgrade Walls»; solo se pulsa «Okay» si el título y el «Cancel» lo
      identifican (el importe va en otra fuente y no se lee: lo fija el juego a partir de N);
-  5. se verifica en el panel (fuente de la verdad): misma fila con menos muros, o la fila ya no aparece
-     cuando el lote cubría todo el nivel. Nunca se reintenta un lote «a ciegas»;
+  5. se verifica en el panel (fuente de la verdad) al acabar la pasada: misma fila con los muros que tocan, o la fila
+     ya no aparece cuando el lote cubría todo el nivel. Nunca se reintenta un lote «a ciegas»;
   6. en modo de prueba se publica lo que se haría y no se pulsa nada de selección ni de confirmación;
   7. una fila de UN solo muro no tiene lote («Upgrade More» sale apagado): se mejora con el «Upgrade» directo de su menú y
      el «Confirm» del diálogo «Upgrade Wall to Level N?», solo si el botón cuesta lo que dice la fila y paga con un
@@ -43,7 +45,7 @@ from ..policy.walls import (
     next_add,
     plan_clicks,
     spendable,
-    verified_in_panel,
+    verified_after_pass,
     wall_gate,
 )
 from ..runtime.context import Context
@@ -104,6 +106,17 @@ class _RowWork:
     skip: str = ""  # por qué no se hizo nada con la fila
     halted: str | None = None  # un lote se abortó: el panel está cerrado y la sesión acaba
     override: TaskResult | None = None  # resultado final que manda sobre todo (bloqueo, lote sin verificar)
+    checked: bool = False  # ya verificada en el sitio (el muro suelto): no entra en la verificación de la pasada
+    live: PanelRow | None = None  # la fila como estaba justo antes de trabajarla (su cantidad ya incluye lo que le llegó)
+
+
+@dataclass(frozen=True)
+class _Taken:
+    """Una fila trabajada: cómo estaba justo antes de trabajarla y cuántos muros se mejoraron."""
+
+    row: PanelRow
+    count: int
+    checked: bool  # ya verificada en el sitio
 
 
 @dataclass(frozen=True)
@@ -175,26 +188,50 @@ class WallBatchTask(PanelTask):
         done: list[tuple[str, int]] = []  # (recurso, muros) de toda la sesión
         skipped: list[str] = []  # por qué se saltó cada fila (para explicar un «no hizo nada»)
         halted: str | None = None  # motivo de un aborto: el panel ya está cerrado
-        for _ in range(cfg.max_passes):  # una pasada más si lo mejorado deja muros nuevos en las filas de arriba
-            spent = False
+        pending: list[_Taken] = []  # lo hecho desde la última revisión: se verifica al releer el panel entero
+        for _ in range(cfg.max_passes):  # una pasada más mientras lo mejorado deje muros nuevos y siga habiendo dinero
+            did = False
             for row in self._wall_rows(rows):
                 work = self._work_row(ctx, row, state, settings)
                 state = work.state
                 done += work.done
-                spent = spent or bool(work.done)
+                count = sum(n for _, n in work.done)
+                if count and not cfg.dry_run:
+                    did = True
+                    pending.append(_Taken(work.live or row, count, work.checked))
                 if work.skip:
                     skipped.append(work.skip)
-                if work.override is not None:  # bloqueo o lote sin verificar: se acaba aquí
+                if work.override is not None:  # bloqueo o muro suelto sin verificar: se acaba aquí
                     self._close(ctx)
                     return work.override
                 if work.halted is not None:
                     halted = work.halted
                     break
-            if halted is not None or cfg.dry_run or not spent or decide_walls(state, settings).resource is None:
+            if cfg.dry_run:
                 break
-            rows = self._rescan(ctx)  # la «revisión» de la pasada: precios y cantidades nuevos, con el panel abierto
-            if isinstance(rows, TaskResult):
-                return rows
+            more_money = halted is None and did and decide_walls(state, settings).resource is not None
+            if more_money:
+                # Lo mejorado deja muros nuevos al subir de nivel: si ya están a la vista no hace falta subir a buscarlos.
+                near = self._visible_work(ctx, state, settings)
+                if near:
+                    rows = near
+                    continue
+            if not pending:
+                break
+            # La «revisión»: se vuelve arriba y se lee el panel entero una vez. Verifica todo lo hecho y trae los muros que
+            # no se veían (precios y cantidades nuevos). Tras un aborto el panel está cerrado y se reabre.
+            read = self._review(ctx, pending, panel_open=halted is None)
+            if isinstance(read, TaskResult):
+                self._close(ctx)
+                return read
+            pending, rows = [], read
+            if not more_money:
+                break
+        if pending:  # se acabaron las pasadas con lo último sin verificar
+            read = self._review(ctx, pending, panel_open=halted is None)
+            if isinstance(read, TaskResult):
+                self._close(ctx)
+                return read
 
         back = self._close(ctx)
         if not done:
@@ -215,6 +252,12 @@ class WallBatchTask(PanelTask):
         """Todo lo que se puede hacer con UNA fila de muros: planear con lo que queda, armar y confirmar sus lotes y
         comprobar en el panel abierto que la fila bajó. Devuelve el saldo que queda para las filas siguientes."""
         cfg = self.config
+        # Los muros mejorados antes en esta sesión suben de nivel y se suman a esta fila: su cantidad ya no es la del
+        # escaneo (un «suelto» puede ser ya un lote). Se localiza por coste y se planea con lo que hay AHORA.
+        live = row if cfg.dry_run else self._locate(ctx, row)
+        if live is None:
+            return _RowWork(state, skip="la fila de muros ya no se ve en el panel")
+        row = live
         # El coste unitario de la fila vale para los dos recursos (en las capturas, 100 000 en oro y en elixir).
         if row.resource not in ("gold", "elixir") or not row.cost:
             return _RowWork(state, skip=f"la fila de muros no tiene recurso o coste legibles ({row.resource}, {row.cost})")
@@ -259,12 +302,13 @@ class WallBatchTask(PanelTask):
             if batch.rest is not None:  # se cambió de recurso: lo que queda es lo que el nuevo plan reparte
                 queue = list(batch.rest)
 
-        state = self._after_spending(state, row_done, row.cost)
-        total = sum(n for _, n in row_done)
-        if total and not self._row_verified(ctx, row, total, panel_open=halted is None):
-            ctx.events.publish(Warning("muros: no se pudo verificar el lote en el panel"))
-            return _RowWork(state, done=row_done, override=TaskResult.nothing_to_do("no se pudo verificar el lote en el panel"))
-        return _RowWork(state, done=row_done, halted=halted)
+        # Sin comprobar aquí: se da por hecho lo calculado y se verifica al releer el panel al acabar la pasada.
+        return _RowWork(self._after_spending(state, row_done, row.cost), done=row_done, halted=halted, live=row)
+
+    def _locate(self, ctx: Context, row: PanelRow) -> PanelRow | None:
+        """La fila tal y como está ahora en el panel abierto (posición y cantidad actuales), buscada por su coste."""
+        reveal = getattr(self.scanner, "reveal", None)
+        return row if reveal is None else reveal(ctx, row, any_quantity=True)
 
     def _work_single(self, ctx: Context, row: PanelRow, state: WallState, settings: WallSettings) -> _RowWork:
         """Un solo muro: el juego no ofrece lote («Upgrade More» sale apagado). Se mejora con el «Upgrade» directo de su menú,
@@ -284,7 +328,9 @@ class WallBatchTask(PanelTask):
         if not verified:
             ctx.events.publish(Warning("muros: no se pudo verificar el muro suelto"))
             return _RowWork(after, done=done, override=TaskResult.nothing_to_do("no se pudo verificar el muro suelto"))
-        return _RowWork(after, done=done, halted=None if panel_open else "el juego cerró el panel tras mejorar un muro suelto")
+        return _RowWork(
+            after, done=done, checked=True, live=row, halted=None if panel_open else "el juego cerró el panel tras mejorar un muro suelto"
+        )
 
     def _upgrade_single(self, ctx: Context, row: PanelRow, allowed: set[str]) -> _Batch:
         ctx.check_stop()
@@ -359,12 +405,48 @@ class WallBatchTask(PanelTask):
                 elixir -= n * unit_cost
         return replace(state, resources=(gold, elixir, dark))
 
-    def _row_verified(self, ctx: Context, row: PanelRow, total: int, panel_open: bool) -> bool:
-        """Comprueba que el lote bajó la fila. Con el panel abierto se mira en el sitio (se actualiza en directo): una
-        captura si la fila sigue a la vista. Solo si un aborto lo cerró hay que reabrirlo, como antes."""
-        if not panel_open:
-            return self._verified(ctx, row, total)
-        return self.scanner.confirm(ctx, row, total)
+    def _review(self, ctx: Context, pending: list[_Taken], panel_open: bool) -> list[PanelRow] | TaskResult:
+        """Relee el panel entero y comprueba todo lo hecho desde la última revisión. Devuelve las filas leídas (para la
+        pasada siguiente) o el resultado final si no se pudo verificar. Se relee una vez más si no cuadra."""
+        for attempt in range(self.config.verify_attempts):
+            ctx.check_stop()
+            read = self._rescan(ctx) if panel_open or attempt else self._open_and_scan(ctx)
+            if isinstance(read, TaskResult):
+                return read
+            if all(self._row_matches(read, pending, i) for i in range(len(pending))):
+                return read
+            ctx.events.publish(WallBatchStep("verify_failed", sum(t.count for t in pending), f"intento {attempt + 1}"))
+        ctx.events.publish(Warning("muros: no se pudo verificar el lote en el panel"))
+        return TaskResult.nothing_to_do("no se pudo verificar el lote en el panel")
+
+    def _row_matches(self, rows: list[PanelRow], pending: list[_Taken], index: int) -> bool:
+        """¿La fila relevida cuadra con lo mejorado? Se parte de su cantidad justo antes de trabajarla y solo cuentan los
+        muros que le llegaron DESPUÉS, de filas trabajadas más tarde: los de la fila del nivel anterior (nivel − 1); los de
+        filas con nivel ilegible solo ponen el techo del margen."""
+        mine = pending[index]
+        row = mine.row
+        later = pending[index + 1:]
+        if mine.checked or any(t.row.cost == row.cost for t in later):  # ya verificada, o la sustituye una lectura posterior
+            return True
+        known = unknown = 0
+        for other in later:
+            if row.level is not None and other.row.level is not None:
+                known += other.count if other.row.level == row.level - 1 else 0
+            else:
+                unknown += other.count
+        after = self._same_wall_row(rows, row)
+        return verified_after_pass(
+            row.quantity, row.cost, mine.count, known, known + unknown,
+            after.quantity if after else None, after.cost if after else None,
+            after is not None, bool(self.last_scan.reached_end),
+        )
+
+    def _visible_work(self, ctx: Context, state: WallState, settings: WallSettings) -> list[PanelRow]:
+        """Filas de muros que ya se ven en el panel (sin subir ni bajar) y que el saldo permite mejorar."""
+        visible = getattr(self.scanner, "visible", None)
+        if visible is None:
+            return []
+        return [r for r in self._wall_rows(visible(ctx)) if r.cost and self._plan(state, settings, r)]
 
     def _rescan(self, ctx: Context) -> list[PanelRow] | TaskResult:
         """Vuelve al principio del panel abierto y lo lee entero."""
@@ -583,31 +665,6 @@ class WallBatchTask(PanelTask):
         ctx.events.publish(WallBatchStep("abort", None, reason))
         self._close(ctx)
         return _Batch(False, reason=reason)
-
-    # ------------------------------------------------------------------------------ verificar
-
-    def _verified(self, ctx: Context, before: PanelRow, count: int) -> bool:
-        """Reabre el panel (fuente de la verdad) y comprueba que el lote se aplicó. Se relee una vez."""
-        back = self._close(ctx)
-        if back is not None:
-            return False
-        for attempt in range(self.config.verify_attempts):
-            ctx.check_stop()
-            rows = self._open_and_scan(ctx)
-            if isinstance(rows, TaskResult):
-                return False
-            after = self._same_wall_row(rows, before)
-            complete = bool(self.last_scan.reached_end)
-            verified = verified_in_panel(
-                before.quantity, before.cost, count,
-                after.quantity if after else None, after.cost if after else None,
-                after is not None, complete,
-            )
-            self._close(ctx)
-            if verified:
-                return True
-            ctx.events.publish(WallBatchStep("verify_failed", count, f"intento {attempt + 1}"))
-        return False
 
 
 __all__ = ["WALL", "WallBatchTask", "WallConfig", "WallInputs"]

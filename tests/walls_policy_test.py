@@ -16,6 +16,7 @@ from pyclash.policy.walls import (
     next_window_delay,
     plan_clicks,
     spendable,
+    verified_after_pass,
     verified_in_panel,
     wall_gate,
     window_due,
@@ -249,6 +250,20 @@ def test_fila_ilegible_no_cuenta():
 
 def test_lote_vacio_nunca_verifica():
     assert not verified_in_panel(30, 1000, 0, None, None, False, True)
+
+
+def test_verificacion_de_pasada_suma_los_muros_que_llegan_del_nivel_anterior():
+    assert verified_after_pass(30, 1000, 10, 0, 0, 20, 1000, True, True)  # sin llegadas: como antes
+    assert verified_after_pass(30, 1000, 10, 15, 15, 35, 1000, True, True)  # llegan 15: 30 − 10 + 15
+    assert not verified_after_pass(30, 1000, 10, 15, 15, 20, 1000, True, True)
+    assert verified_after_pass(30, 1000, 10, 0, 5, 23, 1000, True, True)  # llegadas inciertas: dentro del margen
+    assert not verified_after_pass(30, 1000, 10, 0, 5, 26, 1000, True, True)
+
+
+def test_verificacion_de_pasada_fila_ausente_solo_si_no_pudo_recibir_muros():
+    assert verified_after_pass(30, 1000, 30, 0, 5, None, None, False, True)
+    assert not verified_after_pass(30, 1000, 30, 5, 5, None, None, False, True)  # tenía que haber recibido 5
+    assert not verified_after_pass(30, 1000, 30, 0, 0, None, None, False, False)  # panel sin recorrer entero
 
 
 def test_la_reserva_de_constructor_para_muros_esta_activa_por_defecto():  # R5

@@ -259,8 +259,8 @@ def test_una_sesion_hace_todas_las_filas_de_muros_sin_cerrar_el_panel():
         # tras «Okay» el panel sigue abierto (se actualiza en directo); con un solo muro el lote ya está armado
         transitions=[route(B1, MODAL, UPGRADE_E), route(MODAL, PANEL, OKAY)] + BASE,
         village=FakeVillage(vstate(gold=3000, elixir=4500)),
-        # antes; fila 1 sin aparecer (se mejoró entera); fila 2 con 5 muros menos
-        readings=[([row1, row2], True), ([row2], True), ([replace(row2, quantity=5)], True)],
+        # antes; y al releer al acabar: fila 1 sin aparecer (se mejoró entera) y fila 2 con 5 muros menos
+        readings=[([row1, row2], True), ([replace(row2, quantity=5)], True)],
     )
     planned = collect(ctx, WallBatchPlanned)
     result = run_task(task, ctx)
@@ -271,7 +271,8 @@ def test_una_sesion_hace_todas_las_filas_de_muros_sin_cerrar_el_panel():
     ]
     assert len(tapped(ctx, BUILD)) == 1  # el panel se abrió una vez
     assert len(tapped(ctx, UPGRADE_E)) == 2 and len(tapped(ctx, UPGRADE)) == 1 and len(tapped(ctx, OKAY)) == 3
-    assert task.scanner.calls == ["scan", "confirm", "confirm"]  # una lectura al principio y una comprobación por fila
+    # una lectura al principio y UNA al acabar, volviendo arriba: no se comprueba fila a fila ni se recorre el panel por cada una
+    assert task.scanner.calls == ["scan", "rewind", "scan"]
 
 
 SINGLE_UPGRADE = Rect(580, 570, 90, 70)  # «Upgrade» directo del menú de un muro suelto (a 720 de alto)
@@ -323,20 +324,69 @@ def test_el_muro_suelto_sin_dinero_no_se_pulsa():
 
 
 def test_si_sobra_dinero_tras_la_pasada_se_relee_el_panel_y_se_sigue():
-    """Lo mejorado puede dejar muros nuevos en una fila de arriba: una segunda pasada los recoge."""
-    row = _wall(2, 1000)
+    """Lo mejorado deja muros nuevos (al subir de nivel salen en otra fila): la relectura de al acabar los ve y una
+    segunda pasada los mejora, todo dentro de la misma sesión."""
+    first, second = _wall(2, 1000), _wall(2, 2000, y=360)
     task, ctx = make(
         table=both_buttons(), transitions=[route(B1, MODAL, UPGRADE_E), route(MODAL, PANEL, OKAY)] + BASE,
         village=FakeVillage(vstate(gold=100000, elixir=100000)),
-        readings=[([row], True), ([], True), ([], True)],  # tras el lote la fila desaparece; en la relectura no hay más muros
+        # antes; tras la pasada 1 la fila de 1000 desaparece y sus 2 muros salen en una fila nueva de 2000; tras la 2 no queda nada
+        readings=[([first], True), ([second], True), ([], True)],
     )
     result = run_task(task, ctx)
-    assert result.outcome is Outcome.DONE and "2 muros mejorados" in result.reason
-    assert task.scanner.calls == ["scan", "confirm", "rewind", "scan"]  # sobra dinero: vuelve al principio y relee
+    assert result.outcome is Outcome.DONE and "4 muros mejorados" in result.reason
+    assert task.scanner.calls == ["scan", "rewind", "scan", "rewind", "scan"]
     assert len(tapped(ctx, BUILD)) == 1
 
 
-def test_sin_dinero_para_mas_no_se_relee_el_panel():
+def test_la_fila_que_recibe_los_muros_del_nivel_anterior_se_verifica_con_ellos_sumados():
+    """Los 4 muros del nivel 2 suben al 3 y se suman a los 10 que ya estaban: la fila de nivel 3 no baja, sube."""
+    low = replace(_wall(4, 1000), level=6)
+    high = replace(_wall(10, 5000, y=360), level=7)
+    task, ctx = make(
+        table=both_buttons(), transitions=[route(B1, MODAL, UPGRADE_E), route(MODAL, PANEL, OKAY)] + BASE,
+        village=FakeVillage(vstate(gold=1000, elixir=4000)),  # elixir para 4 muros de 1000 y nada para los de 5000
+        readings=[([high, low], True), ([replace(high, quantity=14)], True)],
+    )
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and "4 muros" in result.reason
+
+
+def test_un_muro_suelto_que_recibe_los_muros_de_otra_fila_se_mejora_como_lote():
+    """Registro real: tras mejorar 48 muros, estos suben de nivel y se suman a la fila «suelta» de más abajo (1 → 49).
+    Buscarla por cantidad la perdía y abortaba la sesión; ahora se localiza por coste y se planea con lo que hay."""
+    batch, single = _wall(3, 2000), _wall(1, 4000, y=360)
+    task, ctx = make(
+        table=both_buttons(), transitions=[route(MODAL, PANEL, OKAY)] + BASE,
+        village=FakeVillage(vstate(gold=30000, elixir=0)),
+        readings=[([batch, single], True), ([], True)],  # al releer, las dos filas se han agotado
+    )
+    task.scanner.reveal = lambda ctx, row, **kw: replace(row, quantity=4) if row.cost == 4000 else row  # llegaron 3
+    planned = collect(ctx, WallBatchPlanned)
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and "7 muros" in result.reason, result.reason
+    assert [(p.count, p.unit_cost) for p in planned] == [(3, 2000), (4, 4000)]  # 4 muros: es un lote, no un suelto
+
+
+def test_si_los_muros_nuevos_ya_estan_a_la_vista_no_se_sube_a_buscarlos():
+    """Al mejorar de nivel salen muros nuevos; si ya se ven en la pantalla actual se siguen sin volver arriba. La revisión
+    (subir y releer todo) queda para cuando a la vista no hay nada más: una sola, al final, que verifica todo."""
+    first, new = _wall(2, 1000), _wall(2, 2000, y=360)
+    task, ctx = make(
+        table=both_buttons(), transitions=[route(MODAL, PANEL, OKAY)] + BASE,
+        village=FakeVillage(vstate(gold=100000, elixir=0)),
+        readings=[([first], True), ([], True)],  # al releer del todo, ya no queda ninguna fila
+    )
+    sights = [[new], []]  # tras la primera pasada se ve la fila nueva; tras la segunda, nada
+    task.scanner.visible = lambda ctx: sights.pop(0)
+    planned = collect(ctx, WallBatchPlanned)
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and "4 muros" in result.reason, result.reason
+    assert [(p.count, p.unit_cost) for p in planned] == [(2, 1000), (2, 2000)]
+    assert task.scanner.calls == ["scan", "rewind", "scan"]  # una sola vuelta arriba, al final
+
+
+def test_al_acabar_siempre_se_relee_una_vez_para_verificar():
     row = _wall(4, 1000)
     task, ctx = make(
         table=both_buttons(), transitions=[route(B1, MODAL, UPGRADE_E), route(MODAL, PANEL, OKAY)] + BASE,
@@ -344,7 +394,7 @@ def test_sin_dinero_para_mas_no_se_relee_el_panel():
         readings=[([row], True), ([], True)],
     )
     run_task(task, ctx)
-    assert task.scanner.calls == ["scan", "confirm"]
+    assert task.scanner.calls == ["scan", "rewind", "scan"]
 
 
 def test_el_lote_nunca_supera_lo_calculado():

@@ -237,6 +237,38 @@ def verified_in_panel(
     return panel_complete and batch == before_quantity
 
 
+def verified_after_pass(
+    before_quantity: int,
+    before_cost: int | None,
+    taken: int,
+    inflow_min: int,
+    inflow_max: int,
+    after_quantity: int | None,
+    after_cost: int | None,
+    row_present: bool,
+    panel_complete: bool,
+) -> bool:
+    """El panel, releído UNA vez al acabar una pasada entera, confirma el lote de una fila.
+
+    Los muros que se mejoran en otra fila (la del nivel anterior) pasan a esta: la fila puede haber ganado entre
+    `inflow_min` (los que se saben seguros) e `inflow_max` (más los de filas con nivel ilegible). Así:
+
+    - Misma fila (mismo coste) con `before - taken + inflow` muros dentro de ese rango: verificado.
+    - La fila ya no aparece: solo si cero cabe en ese mismo rango y el escáner recorrió el panel entero. (`taken` puede
+      superar a `before` si a la fila le llegaron muros antes de trabajarla, p. ej. un «suelto» que pasó a ser un lote.)
+    - Todo lo demás: no verificado y sin reintento del lote.
+    """
+    if taken <= 0:
+        return False
+    low = before_quantity - taken + inflow_min
+    high = before_quantity - taken + inflow_max
+    if row_present:
+        if after_quantity is None or after_cost is None or before_cost is None:
+            return False
+        return after_cost == before_cost and low <= after_quantity <= high
+    return panel_complete and low <= 0 <= high
+
+
 __all__ = [
     "BIG_STEP",
     "Preference",
@@ -252,6 +284,7 @@ __all__ = [
     "next_add",
     "plan_clicks",
     "spendable",
+    "verified_after_pass",
     "verified_in_panel",
     "wall_gate",
     "window_due",
