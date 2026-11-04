@@ -85,6 +85,18 @@ def test_e1r3_coste_en_rojo_no_es_asequible(reader):
     assert bar is not None and bar.upgrades[0].affordable is False
 
 
+def test_un_fondo_salmon_tras_el_boton_translucido_no_es_un_coste_en_rojo(reader):
+    """Con tejados o barriles detrás, el botón deja ver tonos salmón (212,134,105): el coste blanco sigue siendo asequible."""
+    base = img("wall_batch_grey")
+    cx, cy = reader.read(base).upgrades[0].center
+    h = base.shape[0]
+    out = base.copy()
+    patch = out[max(0, cy - int(0.085 * h)) : cy - int(0.02 * h), cx - 50 : cx + 50]
+    patch[patch.min(axis=2) <= 228] = (212, 134, 105)  # todo lo que no es texto blanco: fondo salmón
+    bar = reader.read(out)
+    assert bar is not None and bar.upgrades[0].affordable is True
+
+
 def test_region_sin_texto_no_se_sabe():
     blank = np.full((720, 1280, 3), 90, np.uint8)
     assert cost_affordable(blank, Rect(100, 100, 80, 40)) is None

@@ -47,7 +47,7 @@ _LABEL_THRESHOLD = 0.68  # un botón translúcido deja ver las unidades de detr�
 _MIN_TEXT_PIXELS = 8
 MODAL_TITLE_REGION = RoiFraction(0.25, 0.30, 0.5, 0.13)
 MODAL_BUTTONS_REGION = RoiFraction(0.25, 0.52, 0.5, 0.36)
-MODAL_TITLE_PX = 44  # a BASE_HEIGHT
+MODAL_TITLE_PX = 48  # a BASE_HEIGHT; medido: el pico cae a ×1,09 de lo que daba 44 (a 720 y a 993 de alto)
 _MODAL_TITLE_THRESHOLD = 0.6
 _COUNT_MIN_CONFIDENCE = 0.8
 
@@ -91,6 +91,9 @@ class BatchBar:
         return found[0] if len(found) == 1 else None
 
 
+_ICON_REF_HEIGHT = 720.0
+# El icono no escala exactamente con el alto (medido a 993 px: el mejor ajuste cae entre ×1,2 y ×1,3 y no en ×1,38).
+_ICON_SCALE_SWEEP = (0.85, 0.9, 0.95, 1.0, 1.05)
 _ICON_MIN_SCORE = {"gold": 0.62, "elixir": 0.7}
 _ICON_MARGIN = {"gold": 0.15, "elixir": 0.2}
 
@@ -111,12 +114,20 @@ def icon_resource(image: np.ndarray, region: Rect, icons: dict[str, np.ndarray])
     con las dos parecidas (o con ninguna) no se adivina. Es un icono de ~13 px: por eso el color cuenta.
     """
     section, _ = crop(image, region)
+    base = image.shape[0] / _ICON_REF_HEIGHT  # las plantillas se recortaron a 720 de alto
     scores: dict[str, float] = {}
     for key, template in icons.items():
-        if section.shape[0] < template.shape[0] or section.shape[1] < template.shape[1]:
-            return None
-        result = cv2.matchTemplate(section, template, cv2.TM_CCOEFF_NORMED)
-        scores[key] = float(np.nan_to_num(result.max(), nan=0.0))
+        best = 0.0
+        for rel in _ICON_SCALE_SWEEP:
+            f = base * rel
+            scaled = template if abs(f - 1.0) < 0.02 else cv2.resize(
+                template, None, fx=f, fy=f, interpolation=cv2.INTER_AREA if f < 1 else cv2.INTER_LINEAR
+            )
+            if section.shape[0] < scaled.shape[0] or section.shape[1] < scaled.shape[1]:
+                continue
+            result = cv2.matchTemplate(section, scaled, cv2.TM_CCOEFF_NORMED)
+            best = max(best, float(np.nan_to_num(result.max(), nan=0.0)))
+        scores[key] = best
     best = max(scores, key=scores.get)  # type: ignore[arg-type]
     rival = max(v for k, v in scores.items() if k != best)
     if scores[best] >= _ICON_MIN_SCORE[best] and scores[best] - rival >= _ICON_MARGIN[best]:
@@ -130,7 +141,9 @@ def cost_affordable(image: np.ndarray, region: Rect) -> bool | None:
     if section.size == 0:
         return None
     px = section.reshape(-1, 3).astype(int)
-    red = int(((px[:, 0] > 200) & (px[:, 1] < 150) & (px[:, 2] < 140) & (px[:, 0] - px[:, 1] > 70)).sum())
+    # El texto rojo del juego es muy brillante (R ≥ 240; ≈ 255,123,114). El botón es translúcido y deja ver la aldea de detrás:
+    # tejados y barriles dan tonos salmón (p. ej. 212,134,105; R ≤ 234 medido) que con un umbral de R > 200 se contaban como rojo.
+    red = int(((px[:, 0] >= 240) & (px[:, 1] < 150) & (px[:, 2] < 140) & (px[:, 0] - px[:, 1] > 70)).sum())
     white = int(((px.min(axis=1) > 228)).sum())
     if red >= _MIN_TEXT_PIXELS and red > white:
         return False
