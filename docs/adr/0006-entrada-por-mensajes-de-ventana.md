@@ -1,0 +1,3 @@
+# La entrada va por mensajes de ventana, sin cursor real ni AutoHotkey
+
+El bot captura con `PrintWindow` y manda clics, arrastre y rueda como mensajes de ventana (`SendMessage`) desde Python con `ctypes`, sin mover el cursor ni pedir el foco, para que el jugador pueda seguir usando el ordenador mientras trabaja. Se descartaron AutoHotkey v2, `SendInput` y `pyautogui` porque la entrada real le roba el ratón y el teclado al jugador, y AutoHotkey añade otro proceso que rompe las pruebas con `FakeDevice`; `SendInput` quedaría como un segundo backend de `Device` si el juego ignorara los mensajes. Las listas se desplazan con la rueda y no arrastrando, porque el arrastre rebotaba en los topes.
