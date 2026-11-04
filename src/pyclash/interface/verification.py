@@ -391,10 +391,13 @@ def run_check(
     clock: Clock | None = None,
     capture_dir: Path = DEFAULT_CAPTURE_DIR,
     on_line: Callable[[str], None] | None = None,
+    gold_reserve: GoldReserve | None = None,
 ) -> CheckOutcome:
     """Ejecuta una comprobación con un contexto real; nunca lanza: los fallos acaban en `lines`.
 
     `on_line` recibe en directo cada evento (la pantalla los muestra mientras la tarea trabaja).
+    `gold_reserve`: la reserva de oro de la sesión. Cada comprobación tiene su propio `Context`, así que sin
+    pasarla, lo que lee «Leer coste de búsqueda» se perdería y «Muros» nunca vería la reserva.
     """
     ctx = Context(
         device=device,
@@ -402,6 +405,7 @@ def run_check(
         clock=clock or SystemClock(),
         rng=random.Random(),
         stop=stop or StopToken(),
+        **({"gold_reserve": gold_reserve} if gold_reserve is not None else {}),
     )
     events: list[str] = []
 

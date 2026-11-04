@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..device.base import Device
+from ..policy.gold_reserve import GoldReserve
 from ..runtime.stop import StopToken
 from ..tasks.base import Outcome
 from .verification import CHECKS, DEFAULT_CAPTURE_DIR, RISK_LABELS, Check, CheckOutcome, run_check
@@ -41,6 +42,7 @@ class VerificationPanel(QWidget):
         super().__init__()
         self.device = device
         self._stop: StopToken | None = None
+        self._gold_reserve = GoldReserve()  # una por ventana: «Leer coste de búsqueda» la rellena y «Muros» la usa
         self._buttons: list[QPushButton] = []
         self._bridge = _Bridge()
         self._bridge.line.connect(self._append)
@@ -104,7 +106,9 @@ class VerificationPanel(QWidget):
         stop = self._stop
 
         def work() -> None:
-            outcome = run_check(check, self.device, stop=stop, on_line=self._bridge.line.emit)
+            outcome = run_check(
+                check, self.device, stop=stop, on_line=self._bridge.line.emit, gold_reserve=self._gold_reserve
+            )
             self._bridge.finished.emit(outcome)
 
         threading.Thread(target=work, daemon=True).start()

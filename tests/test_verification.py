@@ -78,6 +78,27 @@ def test_stop_before_a_task_ends_it_without_touching_anything():
     assert out.result is not None and out.result.outcome is Outcome.STOPPED
 
 
+def test_the_gold_reserve_is_shared_between_checks_of_a_session():
+    """Cada comprobación tiene su `Context`: la reserva que lee una debe llegar a la siguiente (Muros REAL)."""
+    from pyclash.policy.gold_reserve import GoldReserve
+
+    reserve = GoldReserve()
+
+    def reads(ctx, directory):
+        ctx.gold_reserve.update(350, 350, ctx.clock.now())
+        return CheckOutcome(["leído"])
+
+    def uses(ctx, directory):
+        return CheckOutcome([f"colchón {ctx.gold_reserve.floor(ctx.clock.now())}"])
+
+    dev, clock = device(fixture_frame("main_village"))
+    run_check(Check("a", "a", "read", "", reads), dev, clock=clock, gold_reserve=reserve)
+    out = run_check(Check("b", "b", "read", "", uses), dev, clock=clock, gold_reserve=reserve)
+    assert out.lines == ["colchón 26600"]
+    alone = run_check(Check("c", "c", "read", "", uses), dev, clock=clock)
+    assert alone.lines == ["colchón None"]  # sin compartirla, cada comprobación parte de cero
+
+
 def test_held_input_is_released_after_a_check():
     def holds(ctx, directory):
         ctx.device.press(5, 5)
