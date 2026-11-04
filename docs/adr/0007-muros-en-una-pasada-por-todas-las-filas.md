@@ -1,0 +1,3 @@
+# Los muros se mejoran en una sola pasada por todas las filas
+
+Una ejecución abre el panel una vez y recorre todas las filas de más cara a más barata con el saldo que queda (restando `muros × coste unitario`), deja los muros sueltos para el final y repite la pasada, releyendo, mientras sobre dinero. Cada fila se verifica nada más acabarla, en el panel abierto que se actualiza en directo, porque los muros mejorados pasan al nivel siguiente y pueden sumarse a otra fila, así que una verificación única al final no cuadraría. Se descartaron hacer una fila por ventana y cerrar y reabrir el panel para verificar.
