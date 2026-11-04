@@ -12,7 +12,7 @@ import pytest
 
 from pyclash.device.base import Capabilities, Rect
 from pyclash.device.fake import FakeDevice, Transition
-from pyclash.policy.walls import Preference, WallSettings
+from pyclash.policy.walls import Preference, WallSettings, WallState
 from pyclash.runtime.clock import FakeClock
 from pyclash.runtime.context import Context
 from pyclash.runtime.events import WallBatchPlanned, WallBatchStep, Warning
@@ -221,11 +221,15 @@ def test_solo_oro_habilitado_con_preferencia_de_solo_elixir_no_hace_nada():
 # --------------------------------------------------------------------------- R2: botones activos
 
 
-def test_botones_de_anadir_apagados_no_se_pulsan_y_el_lote_queda_en_el_maximo():  # E1R2
+def test_botones_de_anadir_apagados_no_cambian_nada_y_el_lote_queda_en_el_maximo():  # E1R2
+    """Las pulsaciones se calculan de antemano (3 × «+1»): con solo 2 muros posibles, el botón se apaga tras la
+    primera y las demás no hacen nada (en el juego real un botón apagado no responde). Se lee, se ve el máximo
+    y se confirma con 2; el «+10» apagado no se pulsa nunca."""
     table = {B1: bar(1), B2: bar(2, add10=False, add1=False)}
-    task, ctx = make(table=table, readings=[([WALL_ROW], True), ([_row(24)], True)])
+    no_third = [t for t in BASE if not (t.source == B2 and t.target == B3)]  # el «+1» apagado no pasa a B3
+    task, ctx = make(table=table, transitions=no_third, readings=[([WALL_ROW], True), ([_row(24)], True)])
     result = run_task(task, ctx)
-    assert len(tapped(ctx, ADD1)) == 1 and not tapped(ctx, ADD10)  # a B2 y ahí se para
+    assert not tapped(ctx, ADD10) and len(tapped(ctx, ADD1)) == 3  # 3 calculadas, solo la primera surte efecto
     assert result.outcome is Outcome.DONE and "2 muros" in result.reason
 
 
@@ -295,10 +299,6 @@ def test_fila_que_desaparece_con_un_lote_que_cubre_todo_el_nivel():  # E2R4
     assert result.outcome is Outcome.DONE and "4 muros" in result.reason
 
 
-def test_fila_ausente_con_el_panel_sin_recorrer_entero_no_verifica():
-    four = _row(4)
-    task, ctx = make(readings=[([four], True), ([], False)])
-    assert run_task(task, ctx).outcome is Outcome.NOTHING_TO_DO
 def test_si_la_fila_se_agota_otra_fila_wall_de_otro_nivel_no_se_toma_por_ella():
     """En el panel real hay una fila «Wall» por nivel (`×100 · 25 000`, `×25 · 500`): al agotarse la primera,
     la siguiente no es «la misma fila con menos muros»."""
@@ -316,6 +316,10 @@ def test_si_otra_fila_wall_tiene_el_mismo_coste_que_la_del_lote_no_hay_verificac
     assert run_task(task, ctx).outcome is Outcome.NOTHING_TO_DO  # misma fila, 25 ≠ 4 − 4: no se da por verificada
 
 
+def test_fila_ausente_con_el_panel_sin_recorrer_entero_no_verifica():
+    four = _row(4)
+    task, ctx = make(readings=[([four], True), ([], False)])
+    assert run_task(task, ctx).outcome is Outcome.NOTHING_TO_DO
 
 
 def test_fila_ausente_con_un_lote_parcial_no_verifica():
@@ -387,8 +391,8 @@ def test_coste_en_rojo_solo_cuenta_el_del_boton_del_recurso_elegido():
 # --------------------------------------------------------------------------- nivel: el elixir solo desde el 5
 
 
-def _wall_at(level, cost=5000):
-    return PanelRow("Wall", 28, cost, "gold", False, False, None, True, "wall", None, (1000, 300), 300, level=level)
+def _wall_at(level, cost=5000, quantity=28):
+    return PanelRow("Wall", quantity, cost, "gold", False, False, None, True, "wall", None, (1000, 300), 300, level=level)
 
 
 def _dry_with_elixir_rich(row):
@@ -410,13 +414,81 @@ def test_muros_que_suben_a_nivel_4_o_menos_se_pagan_solo_con_oro(level):
 
 def test_muros_de_nivel_5_o_mas_pueden_pagarse_con_elixir():
     _, planned = _dry_with_elixir_rich(_wall_at(5, cost=20000))
-    assert planned[-1].resource == "elixir"
+    assert planned[0].resource == "elixir"  # primero el elixir; el oro que sobre va en un segundo lote
+
+
+def test_la_fila_de_muros_nuevos_gratis_no_se_toma_por_el_lote_de_mejora():
+    """En el panel real «Wall ×50 · gratis» (edificios nuevos) sale ANTES que las mejoras: no es un lote."""
+    free_new = PanelRow("Wall", 50, None, None, True, True, None, True, "wall", "other", (1000, 200), 200)
+    result, planned = _dry_with_elixir_rich_rows([free_new, _wall_at(5, cost=20000)])
+    assert result.outcome is Outcome.DONE and planned[-1].unit_cost == 20000
+
+
+def _dry_with_elixir_rich_rows(rows):
+    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    task, ctx = make(
+        config=cfg, village=FakeVillage(vstate(gold=30000, elixir=100000)), readings=[(rows, True)],
+        inputs=lambda c: WallInputs(gold_floor=0, upgrades_pending=False),
+    )
+    planned = collect(ctx, WallBatchPlanned)
+    return run_task(task, ctx), planned
+
+
+def _wall_state(gold, elixir, floor=26_600):
+    return WallState((gold, elixir, 0), 1, floor, False)
+
+
+def test_el_plan_gasta_primero_elixir_y_luego_oro_con_lo_que_queda():
+    plan = WallBatchTask._plan(_wall_state(2_000_000, 100_000), WallSettings(), _wall_at(7, cost=25_000, quantity=100))
+    assert plan == [("elixir", 4), ("gold", 78)]  # oro: (2 000 000 − 26 600) // 25 000 = 78 (caben en los 96 que quedan)
+
+
+def test_el_plan_no_pasa_de_los_muros_que_hay_en_la_fila():
+    plan = WallBatchTask._plan(_wall_state(2_000_000, 100_000), WallSettings(), _wall_at(7, cost=25_000, quantity=5))
+    assert plan == [("elixir", 4), ("gold", 1)]
+    assert sum(n for _, n in plan) <= 5
+
+
+def test_el_plan_salta_el_recurso_que_no_da_para_un_muro():
+    plan = WallBatchTask._plan(_wall_state(2_000_000, 11_783), WallSettings(), _wall_at(7, cost=25_000, quantity=100))
+    assert plan == [("gold", 78)]
+
+
+def test_el_plan_de_niveles_2_a_4_es_solo_oro():
+    plan = WallBatchTask._plan(_wall_state(2_000_000, 500_000), WallSettings(), _wall_at(3, cost=25_000, quantity=100))
+    assert plan == [("gold", 78)]  # con 500 000 de elixir de sobra, el elixir no sirve para estos niveles
+
+
+def test_el_plan_sin_colchon_de_oro_solo_usa_elixir():
+    plan = WallBatchTask._plan(_wall_state(2_000_000, 100_000, floor=None), WallSettings(), _wall_at(7, cost=25_000))
+    assert [r for r, _ in plan] == ["elixir"]
+
+
+def test_si_el_elixir_no_da_para_un_muro_se_prueba_con_el_oro():
+    """Elixir primero con 11 783 y un muro de 25 000: la política lo elige (> 0) pero no cabe ni uno; el oro sí."""
+    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    task, ctx = make(
+        config=cfg, village=FakeVillage(vstate(gold=2_000_000, elixir=11_783)), readings=[([_wall_at(7, cost=25_000)], True)],
+        inputs=lambda c: WallInputs(gold_floor=26_600, upgrades_pending=False),
+    )
+    planned = collect(ctx, WallBatchPlanned)
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and planned[-1].resource == "gold" and planned[-1].count >= 1
+
+
+def test_si_ningun_recurso_da_para_un_muro_no_hace_nada():
+    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    task, ctx = make(
+        config=cfg, village=FakeVillage(vstate(gold=30_000, elixir=11_783)), readings=[([_wall_at(7, cost=25_000)], True)],
+        inputs=lambda c: WallInputs(gold_floor=26_600, upgrades_pending=False),  # oro gastable: 3 400
+    )
+    assert run_task(task, ctx).outcome is Outcome.NOTHING_TO_DO
 
 
 def test_con_nivel_desconocido_no_se_veta_el_elixir():
     """Sin lectura del nivel manda el botón del juego: el veto nunca se aplica por dudas."""
     _, planned = _dry_with_elixir_rich(_wall_at(None))
-    assert planned[-1].resource == "elixir"
+    assert planned[0].resource == "elixir"
 
 
 def test_nivel_bajo_sin_oro_gastable_no_hace_nada_y_lo_explica():

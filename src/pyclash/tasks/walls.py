@@ -32,6 +32,8 @@ from ..policy.walls import (
     decide_walls,
     gold_only_level,
     next_add,
+    plan_clicks,
+    spendable,
     verified_in_panel,
     wall_gate,
 )
@@ -65,6 +67,7 @@ class WallConfig:
     menu: MenuDefinition = VILLAGE_MENU
     dry_run: bool = False
     settle_s: float = 0.8
+    tap_gap_s: float = 0.12  # pausa entre las pulsaciones calculadas de «+10» / «+1»
     open_timeout_s: float = 6.0
     bar_polls: int = 6  # intentos de ver la barra de lote tras «Upgrade More»
     max_red_removals: int = 3  # «−1» como máximo si el coste sale en rojo
@@ -151,26 +154,61 @@ class WallBatchTask(PanelTask):
         if row.resource not in ("gold", "elixir") or not row.cost:
             self._close(ctx)
             return TaskResult.nothing_to_do(f"la fila de muros no tiene recurso o coste legibles ({row.resource}, {row.cost})")
-        target = batch_size(decision.spendable, row.cost, row.quantity)
-        if target < 1:
+        plan = self._plan(state, settings, row)
+        if not plan:
             self._close(ctx)
             return TaskResult.nothing_to_do(f"con {decision.spendable} gastable no cabe un muro de {row.cost}")
-        ctx.events.publish(WallBatchPlanned(decision.resource, target, row.cost, decision.reason))
+        for resource, count in plan:
+            have = spendable(state, resource)
+            ctx.events.publish(WallBatchPlanned(resource, count, row.cost, f"{resource}: gastable {have}, caben {count} de {row.cost}"))
         if cfg.dry_run:
             back = self._close(ctx)
-            return back or TaskResult(Outcome.DONE, f"dry run: {target} muros con {decision.resource}")
+            return back or TaskResult(Outcome.DONE, "dry run: " + "; ".join(f"{n} muros con {r}" for r, n in plan))
 
-        batch = self._build_and_confirm(ctx, row, target, decision.resource)
-        if batch.blocked:
-            return TaskResult.blocked(batch.reason)
-        if not batch.ok:
-            ctx.events.publish(Warning(f"muros: {batch.reason}"))
-            return TaskResult.nothing_to_do(batch.reason)
+        # Los lotes se hacen seguidos, sin verificar entre ellos: ya se sabe cuántos caben (`plan`). Tras cada uno la fila
+        # tiene `quantity − mejorados` muros: así se vuelve a localizar. Se verifica una vez, al final, con el total.
+        done: list[tuple[str, int]] = []
+        current = row
+        for i, (resource, target) in enumerate(plan):
+            batch = self._build_and_confirm(ctx, current, target, resource)
+            if batch.blocked:
+                return TaskResult.blocked(batch.reason)
+            if not batch.ok:
+                ctx.events.publish(Warning(f"muros: {batch.reason}"))
+                if not done:
+                    return TaskResult.nothing_to_do(batch.reason)
+                break  # ya hay un lote hecho: se verifica lo que se confirmó
+            done.append((resource, batch.count))
+            current = replace(current, quantity=current.quantity - batch.count)
 
-        if self._verified(ctx, row, batch.count):
-            return TaskResult(Outcome.DONE, f"{batch.count} muros mejorados con {decision.resource}")
+        total = sum(n for _, n in done)
+        if self._verified(ctx, row, total):
+            if len(done) == 1:
+                return TaskResult(Outcome.DONE, f"{total} muros mejorados con {done[0][0]}")
+            return TaskResult(Outcome.DONE, f"{total} muros mejorados (" + "; ".join(f"{n} con {r}" for r, n in done) + ")")
         ctx.events.publish(Warning("muros: no se pudo verificar el lote en el panel"))
         return TaskResult.nothing_to_do("no se pudo verificar el lote en el panel")
+
+    @staticmethod
+    def _plan(state: WallState, settings: WallSettings, row: PanelRow) -> list[tuple[str, int]]:
+        """Lotes de esta ventana, en orden de preferencia (elixir primero): (recurso, muros).
+
+        Cada recurso se gasta hasta donde llega y lo que queda de la fila pasa al siguiente. El coste unitario de la
+        fila vale para oro y elixir. El elixir no sirve para los niveles 2-4.
+        """
+        plan: list[tuple[str, int]] = []
+        remaining = row.quantity
+        for resource in settings.preference.order:
+            if resource not in settings.enabled or (resource == "elixir" and gold_only_level(row.level)):
+                continue
+            have = spendable(state, resource)
+            if have is None or have <= 0 or have < settings.threshold:
+                continue
+            count = batch_size(have, row.cost, remaining)
+            if count >= 1:
+                plan.append((resource, count))
+                remaining -= count
+        return plan
 
     @staticmethod
     def _no_button_key(resource: str) -> str:
@@ -216,6 +254,26 @@ class WallBatchTask(PanelTask):
         count = bar.count
         if count > target:
             return self._abort(ctx, f"el lote ya vale {count}, más que lo calculado ({target})")
+
+        # Pulsaciones calculadas de antemano: «+10» × k y «+1» × r seguidas (los botones no se mueven mientras sube el
+        # contador) y UNA lectura al final, que debe valer el lote. Una pulsación perdida la corrige el bucle de abajo.
+        planned = ((bar.add10, 10, plan_clicks(target - count)[0]), (bar.add1, 1, plan_clicks(target - count)[1]))
+        if all(button is not None and button.active for button, _, n in planned if n):
+            for button, gain, n in planned:
+                if not n:
+                    continue
+                ctx.events.publish(WallBatchStep(f"add{gain}", count, f"×{n}"))
+                for _ in range(n):
+                    ctx.check_stop()
+                    ctx.device.tap(*button.center)
+                    ctx.sleep(self.config.tap_gap_s)
+            ctx.sleep(self.config.settle_s)
+            after = self._read_bar(ctx)
+            if after is None or after.count is None:
+                return self._abort(ctx, "no se pudo leer el contador tras las pulsaciones de «Add Wall»")
+            if after.count > target or after.count < count:
+                return self._abort(ctx, f"el contador pasó de {count} a {after.count} (el lote es de {target})")
+            count, bar = after.count, after
 
         clicks = 0
         while count < target:
