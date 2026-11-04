@@ -48,6 +48,12 @@ _Avoid_: Umbral, colchón
 Constructor que se deja libre para que los muros avancen mientras el resto de la aldea se mejora.
 _Avoid_: Constructor de muros
 
+### Pulsaciones
+
+**Reacción humana**:
+Pausa aleatoria que el bot deja entre ver cambiar la pantalla y pulsar, y entre pulsaciones seguidas del mismo botón, para que su ritmo no se distinga del de una persona. Nunca es una espera fija, y no sustituye a esperar a que el juego responda.
+_Avoid_: Delay, pausa fija, espera
+
 ### Ataque
 
 **Farmeo**:
