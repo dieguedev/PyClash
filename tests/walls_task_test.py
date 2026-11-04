@@ -3,16 +3,18 @@
 Las pantallas son capturas reales anonimizadas (aldea, panel, barra del muro, modal «Upgrade Walls»,
 gemas). La barra de lote cambia con cada pulsación y solo hay fixtures de contador 1 y 10, así que el
 lector de la barra se guioniza por fotograma (`FakeBars`); `upgrade_more` y `modal` son los reales.
-La visión de la barra tiene sus pruebas sobre las capturas en test_wall_batch.py.
+La visión de la barra tiene sus pruebas sobre las capturas en wall_batch_test.py.
 """
 
 import random
+
+from dataclasses import replace
 
 import pytest
 
 from pyclash.device.base import Capabilities, Rect
 from pyclash.device.fake import FakeDevice, Transition
-from pyclash.policy.walls import Preference, WallSettings, WallState
+from pyclash.policy.walls import Preference, WallSettings, WallState, verified_in_panel
 from pyclash.runtime.clock import FakeClock
 from pyclash.runtime.context import Context
 from pyclash.runtime.events import WallBatchPlanned, WallBatchStep, Warning
@@ -26,9 +28,9 @@ from pyclash.vision.base import MetadataVision
 
 from helpers import fixture_frame
 
-VILLAGE, PANEL, SELECT, B1, B2, B3, B4, MODAL, MISSING = range(9)
+VILLAGE, PANEL, SELECT, B1, B2, B3, B4, MODAL, MISSING, SINGLE_MENU, SINGLE_DIALOG = range(11)
 FRAMES = ["main_village", "upgrade_panel_filtered", "wall_select_bar", "wall_batch_one", "wall_batch_one",
-          "wall_batch_one", "wall_batch_one", "wall_batch_modal", "missing_gems"]
+          "wall_batch_one", "wall_batch_one", "wall_batch_modal", "missing_gems", "wall_single_menu", "wall_single_dialog"]
 
 BUILD = Rect(1140, 640, 140, 80)
 PANEL_ROWS = Rect(941, 72, 339, 560)
@@ -74,14 +76,32 @@ class FakeBars(BatchBarReader):
 
 
 class SeqScanner:
-    """Devuelve una lectura del panel por llamada: antes y después del lote."""
+    """Una lectura del panel por llamada: `scan` da la de antes del lote y `confirm` mira la de después (el panel
+    abierto se actualiza en directo, así que la verificación no recorre nada: se mira la fila en el sitio)."""
 
     def __init__(self, *readings):
         self.readings = list(readings)
+        self.calls: list[str] = []
+
+    def _next(self):
+        return self.readings.pop(0) if len(self.readings) > 1 else self.readings[0]
 
     def scan(self, ctx, **kw):
-        rows, complete = self.readings.pop(0) if len(self.readings) > 1 else self.readings[0]
+        self.calls.append("scan")
+        rows, complete = self._next()
         return PanelScan(tuple(rows), 0, complete, None, "")
+
+    def rewind(self, ctx, **kw):
+        self.calls.append("rewind")
+
+    def confirm(self, ctx, row, taken):
+        self.calls.append("confirm")
+        rows, complete = self._next()
+        after = next((r for r in rows if r.name == "Wall" and r.kind == "wall" and not r.new and not r.free and r.cost == row.cost), None)
+        return verified_in_panel(
+            row.quantity, row.cost, taken,
+            after.quantity if after else None, after.cost if after else None, after is not None, complete,
+        )
 
 
 class FakeVillage:
@@ -122,7 +142,7 @@ def make(*, table=None, transitions=None, village=None, readings=None, inputs=No
     bars = FakeBars(table or {B1: bar(1), B2: bar(2), B3: bar(3), B4: bar(4)})
     bars.device = device
     cfg = config or WallConfig(
-        settle_s=0.1, open_timeout_s=1.0, capture_dir=tmp_path, recovery=RecoveryConfig(settle_seconds=0.1),
+        open_timeout_s=1.0, capture_dir=tmp_path, recovery=RecoveryConfig(settle_seconds=0.1),
     )
     scanner = SeqScanner(*(readings or [([WALL_ROW], True), ([_row(22)], True)]))
     task = WallBatchTask(
@@ -165,6 +185,168 @@ def test_lote_completo_abre_panel_arma_confirma_y_verifica_en_el_panel():
     assert ctx.device.frame_index == VILLAGE
 
 
+def test_las_pulsaciones_de_anadir_van_a_un_ritmo_humano_y_no_fijo():
+    """Entre pulsaciones seguidas pasan entre 0,24 y 0,34 s, sorteados en cada una."""
+    task, ctx = make()  # lote de 4 muros: el contador está en 1 y se arma con tres «+1» seguidos
+    run_task(task, ctx)
+    adds = [a for a in ctx.device.actions if a.kind == "tap" and ADD1.contains(*a.args)]
+    gaps = [round(b.at - a.at, 6) for a, b in zip(adds, adds[1:])]
+    assert len(adds) == 3 and len(gaps) == 2
+    assert all(0.24 - 1e-9 <= g <= 0.34 + 1e-9 for g in gaps), gaps
+    assert gaps[0] != gaps[1]  # no es un valor fijo
+
+
+def test_sin_boton_de_mas_diez_el_lote_se_arma_solo_con_mas_uno():
+    """Con menos de 10 muros posibles el juego no ofrece «+10»: las pulsaciones calculadas van todas a «+1»."""
+    def lone(n):
+        return BatchBar(button(REMOVE), None, button(ADD1), (upgrade_button(UPGRADE, "gold"),), n)
+
+    task, ctx = make(table={B1: lone(1), B2: lone(2), B3: lone(3), B4: lone(4)})
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and "4 muros" in result.reason
+    assert len(tapped(ctx, ADD1)) == 3 and not tapped(ctx, ADD10)
+    assert len(tapped(ctx, UPGRADE)) == 1 and len(tapped(ctx, OKAY)) == 1
+
+
+def test_no_hay_pausas_fijas_solo_la_reaccion_humana_entre_lo_que_se_ve_y_lo_que_se_pulsa():
+    """Entre pantalla y pulsación solo corre la reacción humana aleatoria (0,2-0,35 s): la visión no cuenta en el reloj
+    simulado y no queda ninguna espera fija. Antes eran 0,8 s antes de «Upgrade» y 0,8 s antes de «Okay»."""
+    task, ctx = make()
+    run_task(task, ctx)
+    at = {name: [a.at for a in ctx.device.actions if a.kind == "tap" and rect.contains(*a.args)]
+          for name, rect in (("add", ADD1), ("upgrade", UPGRADE), ("okay", OKAY))}
+    to_upgrade = at["upgrade"][0] - at["add"][-1]  # última pulsación de «+1» → «Upgrade»
+    to_okay = at["okay"][0] - at["upgrade"][0]  # «Upgrade» → «Okay» (el modal sale al primer vistazo)
+    assert 0.2 - 1e-9 <= to_upgrade <= 0.35 + 1e-9, to_upgrade
+    assert 0.2 - 1e-9 <= to_okay <= 0.35 + 1e-9, to_okay
+    assert to_upgrade != to_okay  # sorteadas por separado
+
+
+def test_si_el_modal_tarda_la_espera_dura_lo_que_tarda_y_se_pulsa_okay_tras_reaccionar():
+    """Con el modal retrasado, no se pulsa nada hasta que sale; luego, la reacción humana."""
+    task, ctx = make()
+    dev = ctx.device
+    real_capture = dev.capture
+    seen = {"polls": 0}
+
+    def slow_capture():
+        if dev.frame_index == MODAL:  # el juego tarda en mostrar el modal: tres capturas con la pantalla anterior
+            seen["polls"] += 1
+            if seen["polls"] <= 3:
+                dev._index = B4
+                frame = real_capture()
+                dev._index = MODAL
+                return frame
+        return real_capture()
+
+    dev.capture = slow_capture
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and len(tapped(ctx, OKAY)) == 1
+    upgrade_at = [a.at for a in dev.actions if a.kind == "tap" and UPGRADE.contains(*a.args)][0]
+    okay_at = [a.at for a in dev.actions if a.kind == "tap" and OKAY.contains(*a.args)][0]
+    assert okay_at - upgrade_at >= 3 * 0.1 + 0.2 - 1e-9  # 3 sondeos de 0,1 s y la reacción mínima
+
+
+def _wall(quantity, cost, y=300):
+    return PanelRow("Wall", quantity, cost, "gold", False, False, None, True, "wall", None, (1000, y), y)
+
+
+def test_una_sesion_hace_todas_las_filas_de_muros_sin_cerrar_el_panel():
+    """Dos niveles de muro: se abre el panel una vez, se gasta el saldo que va quedando fila a fila y se cierra al final."""
+    row1, row2 = _wall(4, 1000), _wall(10, 500, y=360)
+    task, ctx = make(
+        table=both_buttons(),
+        # tras «Okay» el panel sigue abierto (se actualiza en directo); con un solo muro el lote ya está armado
+        transitions=[route(B1, MODAL, UPGRADE_E), route(MODAL, PANEL, OKAY)] + BASE,
+        village=FakeVillage(vstate(gold=3000, elixir=4500)),
+        # antes; fila 1 sin aparecer (se mejoró entera); fila 2 con 5 muros menos
+        readings=[([row1, row2], True), ([row2], True), ([replace(row2, quantity=5)], True)],
+    )
+    planned = collect(ctx, WallBatchPlanned)
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and result.reason == "9 muros mejorados (5 con elixir; 4 con gold)", result.reason
+    # fila 1: elixir 4 (de 4500); fila 2 con lo que queda: elixir 500 // 500 = 1 y oro (3000 - colchón 1000) // 500 = 4
+    assert [(p.resource, p.count, p.unit_cost) for p in planned] == [
+        ("elixir", 4, 1000), ("elixir", 1, 500), ("gold", 4, 500),
+    ]
+    assert len(tapped(ctx, BUILD)) == 1  # el panel se abrió una vez
+    assert len(tapped(ctx, UPGRADE_E)) == 2 and len(tapped(ctx, UPGRADE)) == 1 and len(tapped(ctx, OKAY)) == 3
+    assert task.scanner.calls == ["scan", "confirm", "confirm"]  # una lectura al principio y una comprobación por fila
+
+
+SINGLE_UPGRADE = Rect(580, 570, 90, 70)  # «Upgrade» directo del menú de un muro suelto (a 720 de alto)
+CONFIRM = Rect(797, 576, 204, 97)  # «Confirm» del diálogo «Upgrade Wall to Level N?»
+SINGLE = [
+    route(SINGLE_MENU, SINGLE_DIALOG, SINGLE_UPGRADE), route(SINGLE_DIALOG, PANEL, CONFIRM),
+    route(PANEL, SINGLE_MENU, PANEL_ROWS), route(VILLAGE, PANEL, BUILD), route(PANEL, VILLAGE, PANEL_X),
+]
+
+
+def test_un_muro_suelto_se_mejora_con_su_upgrade_directo_y_el_confirm_del_dialogo():
+    """Con un solo muro no hay lote («Upgrade More» apagado): fila → «Upgrade» del menú → «Upgrade Wall to Level 3?» → Confirm."""
+    task, ctx = make(
+        transitions=SINGLE, village=FakeVillage(vstate(gold=5000, elixir=0)),  # colchón 1000: caben 4000 de oro
+        readings=[([_wall(1, 2500)], True), ([], True)],  # el muro suelto se mejora y su fila desaparece
+    )
+    steps, planned = collect(ctx, WallBatchStep), collect(ctx, WallBatchPlanned)
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and result.reason == "1 muros mejorados con gold", result.reason
+    assert [(p.resource, p.count, p.unit_cost) for p in planned] == [("gold", 1, 2500)]
+    assert [s.action for s in steps] == ["select_row", "upgrade_single", "confirm_single"]
+    assert tapped(ctx, SINGLE_UPGRADE) and tapped(ctx, CONFIRM)
+    assert not tapped(ctx, UPGRADE_MORE) and not tapped(ctx, ADD1)  # no hay lote
+    assert len(tapped(ctx, BUILD)) == 1  # el panel se abrió una vez
+
+
+def test_los_muros_sueltos_van_los_ultimos_para_no_cortar_las_filas_con_lote():
+    single, normal = _wall(1, 2500), _wall(4, 1000, y=360)  # en el panel el suelto sale antes, pero se hace después
+    assert [r.quantity for r in WallBatchTask._wall_rows([single, normal])] == [4, 1]
+
+
+def test_el_muro_suelto_no_se_confirma_si_el_boton_cuesta_otra_cosa_que_la_fila():
+    task, ctx = make(
+        transitions=SINGLE, village=FakeVillage(vstate(gold=50000, elixir=0)),
+        readings=[([_wall(1, 1000)], True)],  # la fila dice 1000 y el diálogo, 2500
+    )
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.NOTHING_TO_DO and "cuesta 2500" in result.reason
+    assert not tapped(ctx, CONFIRM)
+
+
+def test_el_muro_suelto_sin_dinero_no_se_pulsa():
+    task, ctx = make(
+        transitions=SINGLE, village=FakeVillage(vstate(gold=3000, elixir=0)),  # tras el colchón (1000) quedan 2000 < 2500
+        readings=[([_wall(1, 2500)], True)],
+    )
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.NOTHING_TO_DO and not tapped(ctx, PANEL_ROWS)
+
+
+def test_si_sobra_dinero_tras_la_pasada_se_relee_el_panel_y_se_sigue():
+    """Lo mejorado puede dejar muros nuevos en una fila de arriba: una segunda pasada los recoge."""
+    row = _wall(2, 1000)
+    task, ctx = make(
+        table=both_buttons(), transitions=[route(B1, MODAL, UPGRADE_E), route(MODAL, PANEL, OKAY)] + BASE,
+        village=FakeVillage(vstate(gold=100000, elixir=100000)),
+        readings=[([row], True), ([], True), ([], True)],  # tras el lote la fila desaparece; en la relectura no hay más muros
+    )
+    result = run_task(task, ctx)
+    assert result.outcome is Outcome.DONE and "2 muros mejorados" in result.reason
+    assert task.scanner.calls == ["scan", "confirm", "rewind", "scan"]  # sobra dinero: vuelve al principio y relee
+    assert len(tapped(ctx, BUILD)) == 1
+
+
+def test_sin_dinero_para_mas_no_se_relee_el_panel():
+    row = _wall(4, 1000)
+    task, ctx = make(
+        table=both_buttons(), transitions=[route(B1, MODAL, UPGRADE_E), route(MODAL, PANEL, OKAY)] + BASE,
+        village=FakeVillage(vstate(gold=1000, elixir=4000)),  # el elixir da justo para los 4 y el oro no pasa del colchón
+        readings=[([row], True), ([], True)],
+    )
+    run_task(task, ctx)
+    assert task.scanner.calls == ["scan", "confirm"]
+
+
 def test_el_lote_nunca_supera_lo_calculado():
     task, ctx = make(village=FakeVillage(vstate(gold=3500)))  # (3500 - 1000) // 1000 = 2
     result = run_task(task, ctx)
@@ -174,7 +356,7 @@ def test_el_lote_nunca_supera_lo_calculado():
 
 
 def test_modo_de_prueba_decide_y_no_pulsa_nada_de_seleccion():
-    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    cfg = WallConfig(dry_run=True, recovery=RecoveryConfig(settle_seconds=0.1))
     task, ctx = make(config=cfg)
     planned = collect(ctx, WallBatchPlanned)
     result = run_task(task, ctx)
@@ -194,7 +376,7 @@ def test_sin_constructor_libre_ni_se_abre_el_panel():
 def test_con_las_mejoras_pendientes_los_muros_esperan():
     config = WallConfig(
         settings=WallSettings(reserve_builder_for_walls=False),
-        settle_s=0.1, open_timeout_s=1.0, recovery=RecoveryConfig(settle_seconds=0.1),
+        open_timeout_s=1.0, recovery=RecoveryConfig(settle_seconds=0.1),
     )
     task, ctx = make(inputs=lambda c: WallInputs(gold_floor=1000, upgrades_pending=True), config=config)
     result = run_task(task, ctx)
@@ -213,7 +395,7 @@ def test_colchon_desconocido_no_gasta_oro():
 
 def test_solo_oro_habilitado_con_preferencia_de_solo_elixir_no_hace_nada():
     cfg = WallConfig(settings=WallSettings(preference=Preference.ELIXIR_ONLY, enabled=frozenset({"gold"})),
-                     settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+                     recovery=RecoveryConfig(settle_seconds=0.1))
     task, ctx = make(config=cfg)
     assert run_task(task, ctx).outcome is Outcome.NOTHING_TO_DO and taps(ctx) == []
 
@@ -348,7 +530,7 @@ def test_con_oro_y_elixir_disponibles_y_elixir_primero_gana_el_elixir():
 
 
 def test_oro_primero_pulsa_el_boton_de_oro_aunque_haya_elixir():
-    cfg = WallConfig(settings=WallSettings(preference=Preference.GOLD_FIRST), settle_s=0.1,
+    cfg = WallConfig(settings=WallSettings(preference=Preference.GOLD_FIRST),
                      recovery=RecoveryConfig(settle_seconds=0.1))
     task, ctx = make(table=both_buttons(), village=FakeVillage(vstate(gold=5000, elixir=4500)), config=cfg)
     run_task(task, ctx)
@@ -362,17 +544,29 @@ def test_si_el_juego_no_ofrece_boton_de_elixir_no_se_arma_el_lote_y_se_apunta():
     assert result.outcome is Outcome.NOTHING_TO_DO and "elixir" in result.reason
     assert not tapped(ctx, ADD1) and not tapped(ctx, ADD10)  # no se armó nada
     assert not tapped(ctx, UPGRADE) and not tapped(ctx, UPGRADE_E) and not tapped(ctx, OKAY)
-    assert not ctx.cooldowns.ready("walls:no_button:elixir")
+    assert not ctx.cooldowns.ready("walls:no_button:elixir:1000")  # por recurso y nivel de muro (coste unitario)
 
 
-def test_tras_apuntar_que_no_hay_elixir_la_siguiente_ventana_usa_el_oro():
+def test_sin_boton_de_elixir_se_sigue_con_oro_en_la_misma_barra_sin_releer_el_panel():
+    # Hay oro por encima del colchón: los muros no han cambiado, solo se rehace la cuenta con el oro.
     task, ctx = make(village=FakeVillage(vstate(gold=5000, elixir=4500)))
-    run_task(task, ctx)  # primera ventana: elixir no disponible
-    ctx.device._index = VILLAGE
-    ctx.device.actions.clear()
-    task.scanner = SeqScanner(([WALL_ROW], True), ([_row(22)], True))
+    warnings, planned = collect(ctx, Warning), collect(ctx, WallBatchPlanned)
     result = run_task(task, ctx)
-    assert result.outcome is Outcome.DONE and tapped(ctx, UPGRADE) and not tapped(ctx, UPGRADE_E)
+    assert result.outcome is Outcome.DONE and result.reason == "4 muros mejorados con gold"
+    assert len(tapped(ctx, UPGRADE)) == 1 and not tapped(ctx, UPGRADE_E) and len(tapped(ctx, OKAY)) == 1
+    # El panel se abre UNA vez y se verifica en el sitio, sin cerrarlo ni reabrirlo; una sola fila pulsada.
+    assert len(tapped(ctx, BUILD)) == 1 and len(tapped(ctx, PANEL_ROWS)) == 1
+    assert len(tapped(ctx, UPGRADE_MORE)) == 1  # y la barra no se cerró ni se volvió a abrir
+    assert any("sin botón de elixir" in w.message for w in warnings)
+    assert planned[-1].resource == "gold" and planned[-1].count == 4  # (5000 − colchón 1000) // 1000
+    assert not ctx.cooldowns.ready("walls:no_button:elixir:1000")  # y se apunta, para este nivel de muro, en las siguientes ventanas
+
+
+def test_el_cambio_a_oro_respeta_lo_que_el_plan_con_oro_repartia():
+    # Con elixir y oro, el plan original era [elixir, oro]; sin elixir, todo el lote va a oro y no se repite el segundo.
+    task, ctx = make(village=FakeVillage(vstate(gold=5000, elixir=4500)))
+    run_task(task, ctx)
+    assert len(tapped(ctx, UPGRADE)) == 1 and len(tapped(ctx, OKAY)) == 1
 
 
 def test_coste_en_rojo_solo_cuenta_el_del_boton_del_recurso_elegido():
@@ -396,7 +590,7 @@ def _wall_at(level, cost=5000, quantity=28):
 
 
 def _dry_with_elixir_rich(row):
-    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    cfg = WallConfig(dry_run=True, recovery=RecoveryConfig(settle_seconds=0.1))
     task, ctx = make(
         config=cfg, village=FakeVillage(vstate(gold=30000, elixir=100000)), readings=[([row], True)],
         inputs=lambda c: WallInputs(gold_floor=0, upgrades_pending=False),
@@ -425,7 +619,7 @@ def test_la_fila_de_muros_nuevos_gratis_no_se_toma_por_el_lote_de_mejora():
 
 
 def _dry_with_elixir_rich_rows(rows):
-    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    cfg = WallConfig(dry_run=True, recovery=RecoveryConfig(settle_seconds=0.1))
     task, ctx = make(
         config=cfg, village=FakeVillage(vstate(gold=30000, elixir=100000)), readings=[(rows, True)],
         inputs=lambda c: WallInputs(gold_floor=0, upgrades_pending=False),
@@ -466,7 +660,7 @@ def test_el_plan_sin_colchon_de_oro_solo_usa_elixir():
 
 def test_si_el_elixir_no_da_para_un_muro_se_prueba_con_el_oro():
     """Elixir primero con 11 783 y un muro de 25 000: la política lo elige (> 0) pero no cabe ni uno; el oro sí."""
-    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    cfg = WallConfig(dry_run=True, recovery=RecoveryConfig(settle_seconds=0.1))
     task, ctx = make(
         config=cfg, village=FakeVillage(vstate(gold=2_000_000, elixir=11_783)), readings=[([_wall_at(7, cost=25_000)], True)],
         inputs=lambda c: WallInputs(gold_floor=26_600, upgrades_pending=False),
@@ -477,7 +671,7 @@ def test_si_el_elixir_no_da_para_un_muro_se_prueba_con_el_oro():
 
 
 def test_si_ningun_recurso_da_para_un_muro_no_hace_nada():
-    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    cfg = WallConfig(dry_run=True, recovery=RecoveryConfig(settle_seconds=0.1))
     task, ctx = make(
         config=cfg, village=FakeVillage(vstate(gold=30_000, elixir=11_783)), readings=[([_wall_at(7, cost=25_000)], True)],
         inputs=lambda c: WallInputs(gold_floor=26_600, upgrades_pending=False),  # oro gastable: 3 400
@@ -492,7 +686,7 @@ def test_con_nivel_desconocido_no_se_veta_el_elixir():
 
 
 def test_nivel_bajo_sin_oro_gastable_no_hace_nada_y_lo_explica():
-    cfg = WallConfig(dry_run=True, settle_s=0.1, recovery=RecoveryConfig(settle_seconds=0.1))
+    cfg = WallConfig(dry_run=True, recovery=RecoveryConfig(settle_seconds=0.1))
     task, ctx = make(
         config=cfg, village=FakeVillage(vstate(gold=30000, elixir=100000)), readings=[([_wall_at(3)], True)],
         inputs=lambda c: WallInputs(gold_floor=None, upgrades_pending=False),  # oro sin colchón conocido: no se gasta

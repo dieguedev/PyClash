@@ -1,4 +1,9 @@
-"""Muros por lotes (issue #13): abrir el panel, localizar la fila «Wall», armar el lote, confirmar y verificar.
+"""Muros por lotes (issue #13): abrir el panel, recorrer las filas «Wall», armar cada lote, confirmar y verificar.
+
+Una sesión abre el panel UNA vez, hace todos los muros que el dinero permita (todos los niveles: una fila por
+nivel, de más caro a más barato, con el saldo que va quedando) y lo cierra al final. El panel abierto se actualiza
+en directo, así que cada fila se comprueba en el sitio. Si lo mejorado deja muros nuevos en una fila ya hecha,
+una pasada más (relee el panel) los recoge.
 
 La decisión (cuándo, con qué recurso, cuántos) es la política pura `policy/walls.py`; aquí solo está el
 recorrido y su cadena de seguridad:
@@ -12,17 +17,21 @@ recorrido y su cadena de seguridad:
      identifican (el importe va en otra fuente y no se lee: lo fija el juego a partir de N);
   5. se verifica en el panel (fuente de la verdad): misma fila con menos muros, o la fila ya no aparece
      cuando el lote cubría todo el nivel. Nunca se reintenta un lote «a ciegas»;
-  6. en modo de prueba se publica lo que se haría y no se pulsa nada de selección ni de confirmación.
+  6. en modo de prueba se publica lo que se haría y no se pulsa nada de selección ni de confirmación;
+  7. una fila de UN solo muro no tiene lote («Upgrade More» sale apagado): se mejora con el «Upgrade» directo de su menú y
+     el «Confirm» del diálogo «Upgrade Wall to Level N?», solo si el botón cuesta lo que dice la fila y paga con un
+     recurso gastable. Esas filas van las últimas: el juego puede cerrar el panel al confirmar.
 
 El juego debe estar EN INGLÉS (ver `UpgradeTask`). Paga con oro o con elixir: la barra de lote trae un botón «Upgrade» por recurso (moneda o gota) y se pulsa
-el del recurso que decide la política. Si el juego no ofrece ese botón no se pulsa nada y no se reintenta en una hora.
+el del recurso que decide la política. Si el juego no ofrece ese botón (para ese nivel de muro) se sigue con el otro
+recurso en la misma barra, y no se reintenta con ese recurso y nivel en una hora.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable
+from typing import Callable, TypeVar
 
 from ..policy.walls import (
     WallSettings,
@@ -40,7 +49,7 @@ from ..policy.walls import (
 from ..runtime.context import Context
 from ..runtime.events import CaptureSaved, WallBatchPlanned, WallBatchStep, Warning
 from ..screens.classifier import ScreenClassifier
-from ..screens.upgrade_dialog import GEMS, DialogReader
+from ..screens.upgrade_dialog import GEMS, DialogReader, usable_confirm
 from ..screens.upgrade_panel import PanelRow, PanelScanner
 from ..screens.village import VillageReader
 from ..screens.wall_batch import BatchBar, BatchBarReader, UpgradeButton
@@ -49,6 +58,7 @@ from .panel import ENGLISH_HINT, PanelTask
 from .recovery import RecoveryConfig
 from .upgrade import VILLAGE_MENU, MenuDefinition
 
+T = TypeVar("T")
 WALL = "Wall"
 _NO_BUTTON = UpgradeButton((0, 0), None, None)  # marcador: «no hay botón» (affordable None)
 
@@ -66,10 +76,17 @@ class WallConfig:
     settings: WallSettings = field(default_factory=WallSettings)
     menu: MenuDefinition = VILLAGE_MENU
     dry_run: bool = False
-    settle_s: float = 0.8
-    tap_gap_s: float = 0.12  # pausa entre las pulsaciones calculadas de «+10» / «+1»
+    # Ritmo (ADR 0005). Las esperas son por sondeo: se mira la pantalla cada `poll_s` y se sigue en cuanto sale lo esperado,
+    # sin pausas fijas. Cada pulsación que responde a un cambio de pantalla lleva además una reacción humana aleatoria.
+    poll_s: float = 0.1
+    ui_timeout_s: float = 4.0  # lo máximo que se espera a que el juego muestre lo esperado antes de abortar sin pulsar
+    reaction_min_s: float = 0.2  # reacción visual simple humana: ~0,2-0,27 s
+    reaction_max_s: float = 0.35
+    # Pausa entre las pulsaciones calculadas de «+10» / «+1»: aleatoria en [min, max] en cada una, para que no sea un ritmo fijo.
+    tap_gap_min_s: float = 0.24
+    tap_gap_max_s: float = 0.34
     open_timeout_s: float = 6.0
-    bar_polls: int = 6  # intentos de ver la barra de lote tras «Upgrade More»
+    max_passes: int = 5  # pasadas por todas las filas en una sesión: lo mejorado puede dejar muros nuevos en la fila de arriba
     max_red_removals: int = 3  # «−1» como máximo si el coste sale en rojo
     verify_attempts: int = 2  # lecturas del panel tras confirmar (se relee una vez)
     cooldown_s: float = 0.0  # sin cooldown: una fila dudosa se reintenta en la siguiente ventana
@@ -79,11 +96,24 @@ class WallConfig:
 
 
 @dataclass(frozen=True)
+class _RowWork:
+    """Lo que dio una fila de muros: el saldo que queda, lo hecho y cómo sigue la sesión."""
+
+    state: WallState
+    done: list[tuple[str, int]] = field(default_factory=list)  # (recurso, muros) confirmados (en simulacro: planeados)
+    skip: str = ""  # por qué no se hizo nada con la fila
+    halted: str | None = None  # un lote se abortó: el panel está cerrado y la sesión acaba
+    override: TaskResult | None = None  # resultado final que manda sobre todo (bloqueo, lote sin verificar)
+
+
+@dataclass(frozen=True)
 class _Batch:
     ok: bool
     count: int = 0
     reason: str = ""
     blocked: bool = False
+    resource: str = ""  # con qué recurso se pagó (puede no ser el planeado si el juego no ofrecía su botón)
+    rest: tuple[tuple[str, int], ...] | None = None  # lotes que quedan si hubo que cambiar de recurso; None: sin cambio
 
 
 class WallBatchTask(PanelTask):
@@ -125,69 +155,225 @@ class WallBatchTask(PanelTask):
         free = village.free_builders if "builders" not in village.unreliable else None
         resources = village.resources if "resources" not in village.unreliable and village.resources else (None, None, None)
         given = self.inputs(ctx)
-        unavailable = frozenset(r for r in ("gold", "elixir") if not ctx.cooldowns.ready(self._no_button_key(r)))
-        settings = replace(cfg.settings, enabled=cfg.settings.enabled - unavailable)
+        settings = cfg.settings
         state = WallState(resources, free, given.gold_floor, given.upgrades_pending)
         decision = decide_walls(state, settings)
         if decision.resource is None:
             return TaskResult.nothing_to_do(decision.reason)
 
+        # Una sola sesión: el panel se abre una vez, se hacen TODOS los muros que el dinero permita (todas las filas, cada
+        # nivel de muro es una) y se cierra al final. El panel abierto se actualiza en directo: no hace falta cerrarlo
+        # para ver el resultado de cada lote.
         rows = self._open_and_scan(ctx)
         if isinstance(rows, TaskResult):
             return rows
-        row = self._wall_row(rows)
-        if row is None:
+        if not self._wall_rows(rows):
             self._close(ctx)
             # Con el panel recorrido entero, que no haya fila «Wall» es que no queda ningún muro por mejorar.
-            done = bool(self.last_scan.reached_end)
-            return TaskResult.nothing_to_do(f"no hay fila «{WALL}» en el panel", exhausted=done)
-        if decision.resource == "elixir" and gold_only_level(row.level):
-            # Los muros que suben al nivel 2, 3 o 4 solo se pagan con oro: se decide de nuevo sin elixir.
-            decision = decide_walls(state, replace(settings, enabled=settings.enabled - {"elixir"}))
-            if decision.resource is None:
-                self._close(ctx)
-                rest = "; ".join(r for r in decision.skipped if not r.startswith("elixir:")) or decision.reason
-                return TaskResult.nothing_to_do(
-                    f"los muros suben al nivel {row.level} y el elixir sirve desde el {ELIXIR_MIN_LEVEL}: {rest}"
-                )
+            return TaskResult.nothing_to_do(f"no hay fila «{WALL}» en el panel", exhausted=bool(self.last_scan.reached_end))
+
+        done: list[tuple[str, int]] = []  # (recurso, muros) de toda la sesión
+        skipped: list[str] = []  # por qué se saltó cada fila (para explicar un «no hizo nada»)
+        halted: str | None = None  # motivo de un aborto: el panel ya está cerrado
+        for _ in range(cfg.max_passes):  # una pasada más si lo mejorado deja muros nuevos en las filas de arriba
+            spent = False
+            for row in self._wall_rows(rows):
+                work = self._work_row(ctx, row, state, settings)
+                state = work.state
+                done += work.done
+                spent = spent or bool(work.done)
+                if work.skip:
+                    skipped.append(work.skip)
+                if work.override is not None:  # bloqueo o lote sin verificar: se acaba aquí
+                    self._close(ctx)
+                    return work.override
+                if work.halted is not None:
+                    halted = work.halted
+                    break
+            if halted is not None or cfg.dry_run or not spent or decide_walls(state, settings).resource is None:
+                break
+            rows = self._rescan(ctx)  # la «revisión» de la pasada: precios y cantidades nuevos, con el panel abierto
+            if isinstance(rows, TaskResult):
+                return rows
+
+        back = self._close(ctx)
+        if not done:
+            return TaskResult.nothing_to_do(halted or (skipped[0] if skipped else "no hay muros que mejorar"))
+        if back is not None:
+            return back
+        by_resource: dict[str, int] = {}
+        for resource, n in done:
+            by_resource[resource] = by_resource.get(resource, 0) + n
+        total = sum(by_resource.values())
+        if cfg.dry_run:
+            return TaskResult(Outcome.DONE, "dry run: " + "; ".join(f"{n} muros con {r}" for r, n in by_resource.items()))
+        if len(by_resource) == 1:
+            return TaskResult(Outcome.DONE, f"{total} muros mejorados con {next(iter(by_resource))}")
+        return TaskResult(Outcome.DONE, f"{total} muros mejorados (" + "; ".join(f"{n} con {r}" for r, n in by_resource.items()) + ")")
+
+    def _work_row(self, ctx: Context, row: PanelRow, state: WallState, settings: WallSettings) -> _RowWork:
+        """Todo lo que se puede hacer con UNA fila de muros: planear con lo que queda, armar y confirmar sus lotes y
+        comprobar en el panel abierto que la fila bajó. Devuelve el saldo que queda para las filas siguientes."""
+        cfg = self.config
         # El coste unitario de la fila vale para los dos recursos (en las capturas, 100 000 en oro y en elixir).
         if row.resource not in ("gold", "elixir") or not row.cost:
-            self._close(ctx)
-            return TaskResult.nothing_to_do(f"la fila de muros no tiene recurso o coste legibles ({row.resource}, {row.cost})")
-        plan = self._plan(state, settings, row)
+            return _RowWork(state, skip=f"la fila de muros no tiene recurso o coste legibles ({row.resource}, {row.cost})")
+        # «Sin botón» se apunta por recurso y nivel de muro (el coste unitario lo identifica): que los muros de nivel 2-4
+        # no ofrezcan elixir no impide pagar con elixir los de nivel alto de la misma sesión.
+        unavailable = frozenset(r for r in ("gold", "elixir") if not ctx.cooldowns.ready(self._no_button_key(r, row.cost)))
+        here = replace(settings, enabled=settings.enabled - unavailable)
+        plan = self._plan(state, here, row)
         if not plan:
-            self._close(ctx)
-            return TaskResult.nothing_to_do(f"con {decision.spendable} gastable no cabe un muro de {row.cost}")
+            return _RowWork(state, skip=self._why_no_plan(state, here, row))
         for resource, count in plan:
             have = spendable(state, resource)
             ctx.events.publish(WallBatchPlanned(resource, count, row.cost, f"{resource}: gastable {have}, caben {count} de {row.cost}"))
         if cfg.dry_run:
-            back = self._close(ctx)
-            return back or TaskResult(Outcome.DONE, "dry run: " + "; ".join(f"{n} muros con {r}" for r, n in plan))
+            return _RowWork(self._after_spending(state, plan, row.cost), done=list(plan))
+        if row.quantity < 2:
+            return self._work_single(ctx, row, state, here)
 
-        # Los lotes se hacen seguidos, sin verificar entre ellos: ya se sabe cuántos caben (`plan`). Tras cada uno la fila
-        # tiene `quantity − mejorados` muros: así se vuelve a localizar. Se verifica una vez, al final, con el total.
-        done: list[tuple[str, int]] = []
+        # Los lotes de una fila se hacen seguidos: ya se sabe cuántos caben (`plan`). Tras cada uno la fila tiene
+        # `quantity − mejorados` muros: así se vuelve a localizar.
+        row_done: list[tuple[str, int]] = []
         current = row
-        for i, (resource, target) in enumerate(plan):
-            batch = self._build_and_confirm(ctx, current, target, resource)
+        queue = list(plan)
+
+        def replan(missing: str) -> list[tuple[str, int]]:
+            """Mismo cálculo sobre la misma fila sin el recurso que el juego no ofrece: no hace falta releer nada."""
+            return self._plan(state, replace(here, enabled=here.enabled - {missing}), row)
+
+        halted: str | None = None
+        while queue:
+            resource, target = queue.pop(0)
+            # Solo el primer lote puede cambiar de recurso: después la fila ya ha cambiado y el plan se hizo con ella.
+            batch = self._build_and_confirm(ctx, current, target, resource, None if row_done else replan)
             if batch.blocked:
-                return TaskResult.blocked(batch.reason)
+                return _RowWork(self._after_spending(state, row_done, row.cost), done=row_done, override=TaskResult.blocked(batch.reason))
             if not batch.ok:
                 ctx.events.publish(Warning(f"muros: {batch.reason}"))
-                if not done:
-                    return TaskResult.nothing_to_do(batch.reason)
-                break  # ya hay un lote hecho: se verifica lo que se confirmó
-            done.append((resource, batch.count))
+                halted = batch.reason  # `_abort` ya cerró el panel
+                break
+            row_done.append((batch.resource, batch.count))
             current = replace(current, quantity=current.quantity - batch.count)
+            if batch.rest is not None:  # se cambió de recurso: lo que queda es lo que el nuevo plan reparte
+                queue = list(batch.rest)
 
-        total = sum(n for _, n in done)
-        if self._verified(ctx, row, total):
-            if len(done) == 1:
-                return TaskResult(Outcome.DONE, f"{total} muros mejorados con {done[0][0]}")
-            return TaskResult(Outcome.DONE, f"{total} muros mejorados (" + "; ".join(f"{n} con {r}" for r, n in done) + ")")
-        ctx.events.publish(Warning("muros: no se pudo verificar el lote en el panel"))
-        return TaskResult.nothing_to_do("no se pudo verificar el lote en el panel")
+        state = self._after_spending(state, row_done, row.cost)
+        total = sum(n for _, n in row_done)
+        if total and not self._row_verified(ctx, row, total, panel_open=halted is None):
+            ctx.events.publish(Warning("muros: no se pudo verificar el lote en el panel"))
+            return _RowWork(state, done=row_done, override=TaskResult.nothing_to_do("no se pudo verificar el lote en el panel"))
+        return _RowWork(state, done=row_done, halted=halted)
+
+    def _work_single(self, ctx: Context, row: PanelRow, state: WallState, settings: WallSettings) -> _RowWork:
+        """Un solo muro: el juego no ofrece lote («Upgrade More» sale apagado). Se mejora con el «Upgrade» directo de su menú,
+        que abre el diálogo «Upgrade Wall to Level N?» con su «Confirm» (el mismo que el de cualquier mejora)."""
+        allowed = {r for r in ("gold", "elixir") if r in settings.enabled and (spendable(state, r) or 0) >= row.cost}
+        batch = self._upgrade_single(ctx, row, allowed)
+        if batch.blocked:
+            return _RowWork(state, override=TaskResult.blocked(batch.reason))
+        if not batch.ok:
+            ctx.events.publish(Warning(f"muros: {batch.reason}"))
+            return _RowWork(state, halted=batch.reason)  # `_abort` ya cerró el panel
+        done = [(batch.resource, 1)]
+        after = self._after_spending(state, done, row.cost)
+        # Con el panel abierto se mira la fila en el sitio; si el juego lo cerró al confirmar, se ve en la aldea que bajó el saldo.
+        panel_open = self.classifier.classify(ctx.device.capture().image).screen is self.config.menu.screen
+        verified = self.scanner.confirm(ctx, row, 1) if panel_open else self._single_paid(ctx, row, batch.resource, state)
+        if not verified:
+            ctx.events.publish(Warning("muros: no se pudo verificar el muro suelto"))
+            return _RowWork(after, done=done, override=TaskResult.nothing_to_do("no se pudo verificar el muro suelto"))
+        return _RowWork(after, done=done, halted=None if panel_open else "el juego cerró el panel tras mejorar un muro suelto")
+
+    def _upgrade_single(self, ctx: Context, row: PanelRow, allowed: set[str]) -> _Batch:
+        ctx.check_stop()
+        seen = self._reveal(ctx, row)
+        if seen is None:
+            return self._abort(ctx, "la fila de muros ya no se ve en el panel")
+        ctx.device.tap(*seen.center)
+        ctx.events.publish(WallBatchStep("select_row"))
+        wall = self._poll(ctx, lambda: self.dialogs.wall_upgrade(ctx.device.capture().image), lambda w: w is not None)
+        if wall is None:
+            return self._abort(ctx, f"la fila no abrió el menú del muro{ENGLISH_HINT}")
+        self._react(ctx)
+        ctx.device.tap(*wall.center)
+        ctx.events.publish(WallBatchStep("upgrade_single"))
+
+        def screen():
+            frame = ctx.device.capture()
+            return frame, self.dialogs.missing(frame.image), self.dialogs.title(frame.image, WALL)
+
+        frame, missing, title = self._poll(ctx, screen, lambda s: s[1] is not None or s[2] is not None)
+        if missing == GEMS:
+            self._close(ctx)
+            return _Batch(False, reason="el juego ofrece pagar con gemas: no se gastan nunca", blocked=True)
+        if missing is not None:
+            return self._abort(ctx, "faltan recursos que no se habían visto en rojo", frame.image)
+        if title is None:
+            return self._abort(ctx, f"el diálogo no nombra «{WALL}» o no se reconoce{ENGLISH_HINT}", frame.image)
+        button = usable_confirm(self.dialogs.confirm_buttons(frame.image))
+        if button is None:
+            return self._abort(ctx, "el diálogo no tiene un botón con oro o elixir", frame.image)
+        if button.cost != row.cost:
+            return self._abort(ctx, f"el botón cuesta {button.cost} y la fila {row.cost}", frame.image)
+        if button.resource not in allowed:
+            return self._abort(ctx, f"el botón gasta {button.resource}, que no se puede gastar ahora", frame.image)
+        self._react(ctx)
+        ctx.check_stop()
+        ctx.device.tap(*button.center)
+        ctx.events.publish(WallBatchStep("confirm_single", 1, button.resource))
+        self._poll(ctx, lambda: self.dialogs.title(ctx.device.capture().image, WALL), lambda t: t is None)  # hasta que se cierra
+        return _Batch(True, 1, resource=button.resource)
+
+    def _single_paid(self, ctx: Context, row: PanelRow, resource: str, before: WallState) -> bool:
+        """Con la aldea a la vista: el recurso bajó al menos la mitad de lo que costaba el muro (como la comprobación de
+        un Rebuild). `before` es el saldo de antes de pagar."""
+        index = {"gold": 0, "elixir": 1}[resource]
+        was = before.resources[index]
+        now = self.village.read_state_stable(ctx)
+        if was is None or row.cost is None or "resources" in now.unreliable or not now.resources or now.resources[index] is None:
+            return False
+        return was - now.resources[index] >= row.cost * 0.5
+
+    def _why_no_plan(self, state: WallState, settings: WallSettings, row: PanelRow) -> str:
+        decision = decide_walls(state, settings)
+        if decision.resource is None:
+            return decision.reason
+        if decision.resource == "elixir" and gold_only_level(row.level):
+            # Los muros que suben al nivel 2, 3 o 4 solo se pagan con oro.
+            without = decide_walls(state, replace(settings, enabled=settings.enabled - {"elixir"}))
+            if without.resource is None:
+                rest = "; ".join(r for r in without.skipped if not r.startswith("elixir:")) or without.reason
+                return f"los muros suben al nivel {row.level} y el elixir sirve desde el {ELIXIR_MIN_LEVEL}: {rest}"
+        return f"con {decision.spendable} gastable no cabe un muro de {row.cost}"
+
+    @staticmethod
+    def _after_spending(state: WallState, spent: list[tuple[str, int]], unit_cost: int) -> WallState:
+        """El saldo tras gastar `spent`: el juego cobra `muros × coste unitario` de la fila."""
+        gold, elixir, dark = state.resources
+        for resource, n in spent:
+            if resource == "gold" and gold is not None:
+                gold -= n * unit_cost
+            elif resource == "elixir" and elixir is not None:
+                elixir -= n * unit_cost
+        return replace(state, resources=(gold, elixir, dark))
+
+    def _row_verified(self, ctx: Context, row: PanelRow, total: int, panel_open: bool) -> bool:
+        """Comprueba que el lote bajó la fila. Con el panel abierto se mira en el sitio (se actualiza en directo): una
+        captura si la fila sigue a la vista. Solo si un aborto lo cerró hay que reabrirlo, como antes."""
+        if not panel_open:
+            return self._verified(ctx, row, total)
+        return self.scanner.confirm(ctx, row, total)
+
+    def _rescan(self, ctx: Context) -> list[PanelRow] | TaskResult:
+        """Vuelve al principio del panel abierto y lo lee entero."""
+        rewind = getattr(self.scanner, "rewind", None)
+        if rewind is not None:
+            rewind(ctx)
+        self.last_scan = self.scanner.scan(ctx, **self._scan_options())
+        ctx.progress()
+        return list(self.last_scan.rows)
 
     @staticmethod
     def _plan(state: WallState, settings: WallSettings, row: PanelRow) -> list[tuple[str, int]]:
@@ -211,13 +397,16 @@ class WallBatchTask(PanelTask):
         return plan
 
     @staticmethod
-    def _no_button_key(resource: str) -> str:
-        return f"walls:no_button:{resource}"
+    def _no_button_key(resource: str, unit_cost: int | None) -> str:
+        return f"walls:no_button:{resource}:{unit_cost}"
 
     @staticmethod
-    def _wall_row(rows: list[PanelRow]) -> PanelRow | None:
+    def _wall_rows(rows: list[PanelRow]) -> list[PanelRow]:
         # Solo las mejoras: la fila «Wall ×N · gratis» de edificios nuevos (muros por colocar) no es un lote de mejora.
-        return next((r for r in rows if r.name == WALL and r.kind == "wall" and not r.new and not r.free), None)
+        # Una fila por nivel de muro, en el orden del panel (el del filtro del juego: de más caro a más barato). Los muros
+        # sueltos van los últimos: su diálogo puede cerrar el panel y no deben cortar las filas con lote.
+        walls = [r for r in rows if r.name == WALL and r.kind == "wall" and not r.new and not r.free]
+        return sorted(walls, key=lambda r: r.quantity < 2)
 
     @staticmethod
     def _same_wall_row(rows: list[PanelRow], before: PanelRow) -> PanelRow | None:
@@ -230,45 +419,66 @@ class WallBatchTask(PanelTask):
 
     # ------------------------------------------------------------------------------ armar y confirmar
 
-    def _build_and_confirm(self, ctx: Context, row: PanelRow, target: int, resource: str) -> _Batch:
+    def _build_and_confirm(
+        self,
+        ctx: Context,
+        row: PanelRow,
+        target: int,
+        resource: str,
+        replan: Callable[[str], list[tuple[str, int]]] | None = None,
+    ) -> _Batch:
         ctx.check_stop()
+        rest: tuple[tuple[str, int], ...] | None = None
         seen = self._reveal(ctx, row)
         if seen is None:
             return self._abort(ctx, "la fila de muros ya no se ve en el panel")
         ctx.device.tap(*seen.center)
         ctx.events.publish(WallBatchStep("select_row"))
-        ctx.sleep(self.config.settle_s)
-        image = ctx.device.capture().image
-        point = self.bars.upgrade_more(image)
+        point = self._poll(ctx, lambda: self.bars.upgrade_more(ctx.device.capture().image), lambda p: p is not None)
         if point is None:
             return self._abort(ctx, f"la fila no abrió la barra del muro{ENGLISH_HINT}")
+        self._react(ctx)
         ctx.device.tap(*point)
         ctx.events.publish(WallBatchStep("upgrade_more"))
 
-        bar = self._wait_bar(ctx)
+        bar = self._read_bar(ctx)
         if bar is None or bar.count is None:
             return self._abort(ctx, "no se ve la barra de lote o su contador")
+        self._react(ctx)
         if bar.upgrade_for(resource) is None:  # antes de armar nada: ¿ofrece el juego pagar con este recurso?
-            ctx.cooldowns.start(self._no_button_key(resource), self.config.unavailable_cooldown_s)
-            return self._abort(ctx, f"el juego no ofrece un botón «Upgrade» de {resource} para estos muros")
+            ctx.cooldowns.start(self._no_button_key(resource, row.cost), self.config.unavailable_cooldown_s)
+            # Los muros no cambian: se rehace la cuenta con el otro recurso y se sigue en esta misma barra.
+            alternative = replan(resource) if replan is not None else []
+            switched = next(((r, n) for r, n in alternative if bar.upgrade_for(r) is not None), None)
+            if switched is None:
+                return self._abort(ctx, f"el juego no ofrece un botón «Upgrade» de {resource} para estos muros")
+            old, (resource, target) = resource, switched
+            rest = tuple(alternative[alternative.index(switched) + 1:])
+            ctx.events.publish(Warning(f"muros: sin botón de {old}; se sigue con {resource} en la misma barra"))
+            ctx.events.publish(WallBatchPlanned(resource, target, row.cost or 0, f"{resource}: sin botón de {old}, caben {target} de {row.cost}"))
         count = bar.count
         if count > target:
             return self._abort(ctx, f"el lote ya vale {count}, más que lo calculado ({target})")
 
         # Pulsaciones calculadas de antemano: «+10» × k y «+1» × r seguidas (los botones no se mueven mientras sube el
         # contador) y UNA lectura al final, que debe valer el lote. Una pulsación perdida la corrige el bucle de abajo.
-        planned = ((bar.add10, 10, plan_clicks(target - count)[0]), (bar.add1, 1, plan_clicks(target - count)[1]))
+        n10, n1 = plan_clicks(target - count)
+        if bar.add10 is None and bar.add1 is not None:  # sin «+10» (menos de 10 muros posibles): todo con «+1»
+            n10, n1 = 0, n10 * 10 + n1
+        planned = ((bar.add10, 10, n10), (bar.add1, 1, n1))
         if all(button is not None and button.active for button, _, n in planned if n):
+            first = True
             for button, gain, n in planned:
                 if not n:
                     continue
                 ctx.events.publish(WallBatchStep(f"add{gain}", count, f"×{n}"))
                 for _ in range(n):
                     ctx.check_stop()
+                    if not first:  # la pausa va ENTRE pulsaciones: tras la última solo se espera a ver el contador
+                        ctx.sleep(ctx.rng.uniform(self.config.tap_gap_min_s, self.config.tap_gap_max_s))
+                    first = False
                     ctx.device.tap(*button.center)
-                    ctx.sleep(self.config.tap_gap_s)
-            ctx.sleep(self.config.settle_s)
-            after = self._read_bar(ctx)
+            after = self._read_bar(ctx, lambda b: b.count == target)  # hasta que el contador llegue al lote
             if after is None or after.count is None:
                 return self._abort(ctx, "no se pudo leer el contador tras las pulsaciones de «Add Wall»")
             if after.count > target or after.count < count:
@@ -290,8 +500,7 @@ class WallBatchTask(PanelTask):
             ctx.check_stop()
             ctx.device.tap(*button.center)
             ctx.events.publish(WallBatchStep(f"add{gain}", count))
-            ctx.sleep(self.config.settle_s)
-            after = self._read_bar(ctx)
+            after = self._read_bar(ctx, lambda b: b.count != count)
             if after is None or after.count is None:
                 return self._abort(ctx, "no se pudo leer el contador tras pulsar «Add Wall»")
             if after.count <= count or after.count > count + gain:
@@ -306,8 +515,7 @@ class WallBatchTask(PanelTask):
             ctx.check_stop()
             ctx.device.tap(*bar.remove.center)
             ctx.events.publish(WallBatchStep("remove1", count, "coste en rojo"))
-            ctx.sleep(self.config.settle_s)
-            after = self._read_bar(ctx)
+            after = self._read_bar(ctx, lambda b: b.count != count)
             if after is None or after.count is None or after.count != count - 1:
                 return self._abort(ctx, "no se pudo reducir el lote en rojo")
             count, bar = after.count, after
@@ -315,6 +523,7 @@ class WallBatchTask(PanelTask):
             return self._abort(ctx, "no se pudo comprobar que el coste del lote no esté en rojo")
 
         # Última comprobación con la barra recién leída: el contador debe valer lo que se va a gastar.
+        self._react(ctx)
         last = self._read_bar(ctx)
         pay = last.upgrade_for(resource) if last is not None else None
         if last is None or last.count != count or pay is None or pay.affordable is not True:
@@ -322,39 +531,48 @@ class WallBatchTask(PanelTask):
         ctx.check_stop()
         ctx.device.tap(*pay.center)
         ctx.events.publish(WallBatchStep("upgrade", count, resource))
-        ctx.sleep(self.config.settle_s)
 
-        frame = ctx.device.capture()
-        if self.dialogs.missing(frame.image) == GEMS:
+        def screen():
+            frame = ctx.device.capture()
+            return frame, self.dialogs.missing(frame.image) == GEMS, self.bars.modal(frame.image)
+
+        frame, gems, modal = self._poll(ctx, screen, lambda s: s[1] or s[2] is not None)  # el modal, o el aviso de gemas
+        if gems:
             self._close(ctx)
             return _Batch(False, reason="el juego ofrece pagar con gemas: no se gastan nunca", blocked=True)
-        modal = self.bars.modal(frame.image)
         if modal is None:
             return self._abort(ctx, "tras «Upgrade» no salió el modal «Upgrade Walls»", frame.image)
+        self._react(ctx)
         ctx.check_stop()
         ctx.device.tap(*modal.okay)
         ctx.events.publish(WallBatchStep("okay", count))
-        ctx.sleep(self.config.settle_s)
-        return _Batch(True, count)
+        self._poll(ctx, lambda: self.bars.modal(ctx.device.capture().image), lambda m: m is None)  # hasta que el modal se cierra
+        return _Batch(True, count, resource=resource, rest=rest)
 
-    def _wait_bar(self, ctx: Context) -> BatchBar | None:
-        for poll in range(self.config.bar_polls):
+    def _poll(self, ctx: Context, read: Callable[[], T], accept: Callable[[T], bool]) -> T:
+        """Mira la pantalla cada `poll_s` hasta que `accept(lectura)` o se agota `ui_timeout_s`; devuelve la última lectura.
+
+        Es lo que sustituye a las pausas fijas: la espera dura lo que tarda el juego en responder y la visión en leerlo.
+        """
+        deadline = ctx.clock.now() + self.config.ui_timeout_s
+        while True:
             ctx.check_stop()
-            ctx.sleep(self.config.settle_s)
-            bar = self.bars.read(ctx.device.capture().image)
-            if bar is not None:
-                return bar
-        return None
+            value = read()
+            if accept(value) or ctx.clock.now() >= deadline:
+                return value
+            ctx.sleep(self.config.poll_s)
 
-    def _read_bar(self, ctx: Context) -> BatchBar | None:
-        """Lee la barra; si falla se relee una vez (el juego redibuja unos instantes tras cada pulsación)."""
-        for attempt in range(2):
-            bar = self.bars.read(ctx.device.capture().image)
-            if bar is not None and bar.count is not None:
-                return bar
-            if attempt == 0:
-                ctx.sleep(self.config.settle_s)
-        return None
+    def _react(self, ctx: Context) -> None:
+        """Pausa de reacción humana, aleatoria, antes de pulsar algo que acaba de aparecer o cambiar (ADR 0005)."""
+        ctx.sleep(ctx.rng.uniform(self.config.reaction_min_s, self.config.reaction_max_s))
+
+    def _read_bar(self, ctx: Context, accept: Callable[[BatchBar], bool] = lambda bar: True) -> BatchBar | None:
+        """Lee la barra con su contador hasta que `accept` lo da por bueno; devuelve la última lectura (o None si nunca salió)."""
+        return self._poll(
+            ctx,
+            lambda: self.bars.read(ctx.device.capture().image),
+            lambda b: b is not None and b.count is not None and accept(b),
+        )
 
     def _abort(self, ctx: Context, reason: str, image=None) -> _Batch:
         """Sale sin confirmar: guarda una captura y vuelve a la aldea."""

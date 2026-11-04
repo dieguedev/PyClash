@@ -34,6 +34,7 @@ from ..screens.battle_bar import BarReader
 from ..screens.classifier import Screen, ScreenClassifier
 from ..screens.escapes import find_escape
 from ..screens.red_zone import read_red_zone, read_red_zone_frames
+from ..screens.panel_layout import VILLAGE_PANEL, PanelLayout
 from ..screens.loot import read_enemy_loot, read_hud_gold, read_next_cost, read_search_cost
 from ..screens.village import VillageReader
 from ..tasks.base import Outcome, Task, TaskResult, run_task
@@ -263,6 +264,100 @@ def _check_panel(ctx: Context, directory: Path) -> CheckOutcome:
     return out
 
 
+def measure_shift(before: np.ndarray, after: np.ndarray, layout: PanelLayout = VILLAGE_PANEL) -> int | None:
+    """Píxeles que subió el contenido del panel entre dos capturas (negativo: bajó); 0 si no se movió.
+
+    None si no se encuentra la correspondencia (movió más de ~70 % del panel, o cambió demasiado).
+    """
+    h, w = before.shape[:2]
+    x0, y0, x1, y1 = layout.viewport(h, w)
+    a = cv2.cvtColor(before[y0:y1, x0:x1], cv2.COLOR_RGB2GRAY)
+    b = cv2.cvtColor(after[y0:y1, x0:x1], cv2.COLOR_RGB2GRAY)
+    if float(np.abs(a.astype(np.float32) - b.astype(np.float32)).mean()) < 1.0:
+        return 0
+    band = int(a.shape[0] * 0.25)
+    for ya in (a.shape[0] - band - int(0.05 * a.shape[0]), int(0.05 * a.shape[0])):  # banda baja y banda alta
+        template = a[ya:ya + band]
+        scores = cv2.matchTemplate(b, template, cv2.TM_CCOEFF_NORMED)
+        _, best, _, loc = cv2.minMaxLoc(scores)
+        if best >= 0.85:
+            return ya - loc[1]
+    return None
+
+
+class _WheelPanelTask(PanelTask):
+    """Abre «Buildings & Heroes», mide cuánto mueve la rueda (1 muesca y las de cada paso del recorrido) y lo cierra."""
+
+    name = "measure_wheel"
+
+    def __init__(self, directory: Path) -> None:
+        self._setup_panel(UpgradeConfig(capture_dir=directory), None, None, None)
+        self.lines: list[str] = []
+
+    def run(self, ctx: Context) -> TaskResult:
+        back = self._to_village(ctx)
+        if back is not None:
+            return back
+        rows = self._open_and_scan(ctx)
+        if isinstance(rows, TaskResult):
+            return rows
+        back = self._close(ctx)
+        return back or TaskResult.done()
+
+    def _scan_options(self) -> dict:
+        return {"max_steps": 0}  # el panel solo se mira; la medición va en `_after_open`
+
+    def _after_open(self, ctx: Context) -> None:
+        scanner = self.scanner
+        layout = scanner.reader.layout
+        frame = ctx.device.capture()
+        h, w = frame.image.shape[:2]
+        _, top, _, bottom = layout.viewport(h, w)
+        viewport_h = bottom - top
+        for _ in range(40):  # hasta arriba del todo
+            ctx.check_stop()
+            scanner._wheel(ctx, frame, forward=False)
+            ctx.sleep(0.15)
+        ctx.sleep(0.5)
+        start = ctx.device.capture().image
+        save_frame(start, self.config.capture_dir, "wheel-0-inicio")
+        moved_any = False
+        for notches in (1, scanner.notches):
+            before = ctx.device.capture().image
+            saved = scanner.notches
+            scanner.notches = notches
+            try:
+                scanner._wheel(ctx, frame, forward=True)
+            finally:
+                scanner.notches = saved
+            ctx.sleep(0.6)
+            after = ctx.device.capture().image
+            save_frame(after, self.config.capture_dir, f"wheel-{notches}-muescas")
+            shift = measure_shift(before, after, layout)
+            if shift is None:
+                self.lines.append(f"{notches} muesca(s): no se localiza el contenido (movió demasiado o cambió): prueba con menos.")
+            elif shift == 0:
+                self.lines.append(f"{notches} muesca(s): el panel NO se movió (¿ya estaba al final, o el juego ignora la rueda sin el cursor real encima?).")
+            else:
+                moved_any = True
+                self.lines.append(f"{notches} muesca(s): {shift} px = {shift / viewport_h:.0%} del alto del panel ({shift / notches:.0f} px por muesca).")
+        if moved_any:
+            self.lines.append(
+                f"El recorrido usa {scanner.notches} muesca(s) por paso: debe quedar por debajo de ~70 % para que las filas se solapen."
+            )
+        for _ in range(40):  # y se devuelve arriba
+            ctx.check_stop()
+            scanner._wheel(ctx, frame, forward=False)
+            ctx.sleep(0.15)
+
+
+def _check_wheel(ctx: Context, directory: Path) -> CheckOutcome:
+    task = _WheelPanelTask(directory)
+    out = _run_task(task, ctx)
+    out.lines = task.lines + out.lines
+    return out
+
+
 # En los simulacros no se reserva ningún constructor: así se ve qué decidiría el bot aunque solo quede uno
 # libre. En los de gasto real se mantiene la reserva por defecto (1), que es lo que haría el bot de verdad.
 _DRY_NOTE = "(Simulacro sin constructor de reserva: lo que decidiría con un constructor libre.)"
@@ -292,11 +387,18 @@ def _walls(dry_run: bool) -> Callable[[Context, Path], CheckOutcome]:
     def run(ctx: Context, directory: Path) -> CheckOutcome:
         # Sin orquestador, lo que este normalmente le da a la tarea se da aquí: no hay mejoras pendientes que
         # tengan prioridad. El oro solo se ofrece en el simulacro (colchón 0) o con la reserva (#32) ya leída.
+        before: list[str] = []
+        if not dry_run and ctx.gold_reserve.needs_read(ctx.clock.now()):
+            # En el real, sin la reserva no se gasta oro: se lee ahora el coste de búsqueda en vez de pedirle al usuario
+            # que lo haga antes. Solo si falta o caducó (pasada una hora); si no, se reutiliza la que hay.
+            read = _run_task(ReadSearchCost(), ctx)
+            before = ["Reserva de oro sin leer o caducada: se lee el coste de búsqueda antes de los muros.", *read.lines]
         floor = 0 if dry_run else ctx.gold_reserve.floor(ctx.clock.now())
         inputs = WallInputs(gold_floor=floor, upgrades_pending=False)
         planned: list[WallBatchPlanned] = []
         ctx.events.subscribe(WallBatchPlanned, planned.append)
         out = _run_task(WallBatchTask(WallConfig(dry_run=dry_run, capture_dir=directory), inputs=lambda _ctx: inputs), ctx)
+        out.lines = before + out.lines
         if planned and planned[-1].resource == "elixir":
             out.lines.append(
                 "Aviso: elige elixir porque el nivel de los muros no se reconoció (o es 5 o más). Los muros que suben "
@@ -306,7 +408,7 @@ def _walls(dry_run: bool) -> Callable[[Context, Path], CheckOutcome]:
             "(Simulacro con colchón de oro 0: también contempla el oro.)" if dry_run
             else (
                 f"Reserva de oro: {floor}." if floor is not None
-                else "Nota: reserva de oro sin leer (usa «Leer coste de búsqueda»): los muros solo gastan elixir."
+                else "Nota: no se pudo leer la reserva de oro (ponte en la aldea y con el juego en inglés): los muros solo gastan elixir."
             )
         )
         return out
@@ -366,12 +468,13 @@ CHECKS: tuple[Check, ...] = (
     Check("zoom_out", "Zoom-out máximo de la aldea", "dry", "Cierra el menú abierto con su X (si lo hay), gira la rueda hasta el tope y guarda la captura final. No gasta.", _zoom_out),
     Check("capture", "Guardar captura", "read", "Guarda la pantalla actual en captures_raw/ (ignorado por git).", _check_capture),
     Check("panel", "Leer panel Buildings & Heroes", "dry", "Abre el panel, lista las filas con coste y color, y lo cierra.", _check_panel),
+    Check("wheel", "Medir la rueda en el panel", "dry", "Abre el panel, gira la rueda 1 y N muescas sobre las tarjetas, mide cuánto se mueve (px y % del panel), guarda las capturas y lo cierra. No gasta.", _check_wheel),
     Check("upgrade_dry", "Mejora (Dry run)", "dry", "Decide qué mejoraría y lo registra; no pulsa ninguna fila.", _upgrade(Mode.DRY_RUN)),
     Check("upgrade_rusher_dry", "Mejora Rusher (Dry run)", "dry", "Decide como Rusher (lista blanca hasta TH9) y lista lo que descarta y por qué, con el TH leído; no pulsa ninguna fila.", _upgrade_rusher_dry),
     Check("walls_dry", "Muros (Dry run)", "dry", "Calcula el lote de muros y lo registra; no lo arma.", _walls(True)),
     Check("build_dry", "Construir (Dry run)", "dry", "Decide qué edificio nuevo compraría; no lo coloca.", _build(True)),
     Check("upgrade", "Mejorar (REAL)", "spend", "Inicia mejoras de verdad (modo Maxer): gasta oro/elixir.", _upgrade(Mode.MAXER)),
-    Check("walls", "Muros (REAL)", "spend", "Arma y confirma un lote de muros: gasta elixir.", _walls(False)),
+    Check("walls", "Muros (REAL)", "spend", "Arma y confirma lotes de muros: gasta elixir y oro. Si la reserva de oro falta o caducó, lee antes el coste de búsqueda.", _walls(False)),
     Check("build", "Construir (REAL)", "spend", "Compra y coloca edificios nuevos: gasta recursos.", _build(False)),
     Check("farm", "Farmeo (REAL)", "spend", "Busca partida (cuesta oro), ataca con el ejército activo (BArch) y espera al resultado.", _farm),
 )

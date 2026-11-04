@@ -223,11 +223,13 @@ class BatchBarReader:
         adds = self._buttons(image, "Add Wall", region)
         removes = self._buttons(image, "Remove", region)
         # «Upgrade» también aparece en «Upgrade More», pero esa pantalla no tiene «Add Wall».
-        if len(adds) != 2 or not upgrade_labels:
+        if len(adds) not in (1, 2) or not upgrade_labels:
             return None
-        add10, add1 = adds  # de izquierda a derecha
-        # «Remove» debe quedar a la izquierda de las dos «Add Wall»; si no, no es esta barra.
-        remove = removes[0] if len(removes) == 1 and removes[0].center[0] < add10.center[0] else None
+        # Con menos de 10 muros posibles el juego no ofrece «+10»: queda un único «Add Wall», el «+1». Si fuera el «+10» mal
+        # identificado, el contador saltaría más de uno al pulsar y la tarea abortaría sin confirmar.
+        add10, add1 = (None, adds[0]) if len(adds) == 1 else adds  # de izquierda a derecha
+        # «Remove» debe quedar a la izquierda de los «Add Wall»; si no, no es esta barra.
+        remove = removes[0] if len(removes) == 1 and removes[0].center[0] < adds[0].center[0] else None
         upgrades = tuple(self._upgrade(image, label) for label in sorted(upgrade_labels, key=lambda r: r.x))
         return BatchBar(remove, add10, add1, upgrades, self.count(image))
 

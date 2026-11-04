@@ -50,6 +50,24 @@ def test_capture_check_saves_a_png(tmp_path):
     assert len(list(tmp_path.glob("*.png"))) == 1
 
 
+def test_measure_shift_finds_how_far_the_panel_moved():
+    from pyclash.interface.verification import measure_shift
+    from pyclash.screens.panel_layout import VILLAGE_PANEL
+
+    image = fixture_frame("upgrade_panel").image
+    h, w = image.shape[:2]
+    x0, y0, x1, y1 = VILLAGE_PANEL.viewport(h, w)
+    moved = image.copy()
+    moved[y0:y1 - 60, x0:x1] = image[y0 + 60:y1, x0:x1]  # el contenido sube 60 px
+    assert measure_shift(image, image) == 0
+    assert abs(measure_shift(image, moved) - 60) <= 1
+    assert abs(measure_shift(moved, image) + 60) <= 1 or measure_shift(moved, image) is None
+
+
+def test_wheel_check_is_a_dry_check():
+    assert check_by_key("wheel").risk == "dry"
+
+
 def test_unexpected_error_is_reported_not_raised():
     def boom(ctx, directory):
         raise ValueError("fallo de prueba")
@@ -76,6 +94,62 @@ def test_stop_before_a_task_ends_it_without_touching_anything():
     out = run_check(check_by_key("upgrade_dry"), dev, stop=stop, clock=clock)
     assert dev.actions == []
     assert out.result is not None and out.result.outcome is Outcome.STOPPED
+
+
+def _stub_walls_and_reading(monkeypatch):
+    """Cambia la lectura del coste de búsqueda y la tarea de muros por stubs: se mira qué hace la comprobación."""
+    from pyclash.interface import verification as v
+    from pyclash.tasks.base import TaskResult
+
+    calls = {"reads": 0, "floors": []}
+
+    class Reading:
+        name, priority = "read_search_cost", 5
+
+        def run(self, ctx):
+            calls["reads"] += 1
+            ctx.gold_reserve.update(350, 350, ctx.clock.now())
+            return TaskResult.done()
+
+    class Walls:
+        name, priority = "upgrade_walls", 30
+
+        def __init__(self, config, inputs):
+            self.inputs = inputs
+
+        def run(self, ctx):
+            calls["floors"].append(self.inputs(ctx).gold_floor)
+            return TaskResult.done()
+
+    monkeypatch.setattr(v, "ReadSearchCost", Reading)
+    monkeypatch.setattr(v, "WallBatchTask", Walls)
+    return calls
+
+
+def test_walls_real_reads_the_search_cost_first_when_the_gold_reserve_is_missing(monkeypatch):
+    calls = _stub_walls_and_reading(monkeypatch)
+    dev, clock = device(fixture_frame("main_village"))
+    out = run_check(check_by_key("walls"), dev, clock=clock)
+    assert calls["reads"] == 1 and calls["floors"] == [26600]  # se leyó y los muros ya ven el colchón de oro
+    assert any("se lee el coste de búsqueda" in line for line in out.lines)
+
+
+def test_walls_real_reuses_a_fresh_gold_reserve_without_reading_again(monkeypatch):
+    from pyclash.policy.gold_reserve import GoldReserve
+
+    calls = _stub_walls_and_reading(monkeypatch)
+    reserve = GoldReserve()
+    dev, clock = device(fixture_frame("main_village"))
+    reserve.update(350, 350, clock.now())
+    run_check(check_by_key("walls"), dev, clock=clock, gold_reserve=reserve)
+    assert calls["reads"] == 0 and calls["floors"] == [26600]
+
+
+def test_walls_dry_run_never_reads_the_search_cost(monkeypatch):
+    calls = _stub_walls_and_reading(monkeypatch)
+    dev, clock = device(fixture_frame("main_village"))
+    run_check(check_by_key("walls_dry"), dev, clock=clock)
+    assert calls["reads"] == 0 and calls["floors"] == [0]  # el simulacro usa colchón 0 y no abre Battle
 
 
 def test_the_gold_reserve_is_shared_between_checks_of_a_session():

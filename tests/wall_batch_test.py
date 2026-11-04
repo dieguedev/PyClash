@@ -31,6 +31,16 @@ def test_e2r2_botones_activos_con_el_lote_en_uno(reader):
     assert bar.upgrade_for("gold").affordable is True and bar.upgrade_for("elixir") is None
 
 
+def test_con_menos_de_diez_muros_posibles_solo_hay_un_add_wall_y_es_el_de_uno(reader):
+    """Con `Wall ×8` el juego no ofrece «+10»: la barra tiene Remove, un único «Add Wall» y los dos «Upgrade» (oro y elixir)."""
+    bar = reader.read(img("wall_batch_only_add_one"))
+    assert bar is not None
+    assert bar.add10 is None and bar.add1 is not None and bar.add1.active
+    assert bar.remove is not None and bar.remove.center[0] < bar.add1.center[0]
+    assert bar.count == 1
+    assert [u.resource for u in bar.upgrades] == ["gold", "elixir"]
+
+
 def test_e1r2_botones_de_anadir_apagados_no_se_pulsan(reader):
     bar = reader.read(img("wall_batch_grey"))
     assert bar is not None
