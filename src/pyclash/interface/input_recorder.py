@@ -4,12 +4,18 @@ Requiere el extra `record` (pynput). Pegamento fino: ratón global y teclas de c
 juego (`GooglePlayGamesDevice`) y un aviso en Tk. La lógica está en `runtime/input_log.py`.
 
 Teclas de control (globales): F9 empieza/para, F10 pone una marca. Nada más del teclado se escucha.
+
+Con `--obs` se conecta al WebSocket de OBS y cada evento lleva su tiempo de vídeo (issue #44); la contraseña va
+en `--obs-password` o en la variable de entorno `PYCLASH_OBS_PASSWORD`. Sin `--obs` funciona como antes.
 """
 
 from __future__ import annotations
 
+import argparse
+import os
 import queue
 import tkinter as tk
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from tkinter import ttk
@@ -17,6 +23,15 @@ from tkinter import ttk
 from ..device.gpg import GooglePlayGamesDevice
 from ..runtime.clock import SystemClock
 from ..runtime.input_log import FileSink, InputLog, InputLogError, WindowState, session_filename
+from ..runtime.obs_link import PASSWORD_ENV, ObsError
+from .obs_socket import DEFAULT_HOST, DEFAULT_PORT, listen_in_thread, open_session
+
+
+@dataclass(frozen=True)
+class ObsOptions:
+    host: str
+    port: int
+    password: str | None
 
 DEFAULT_CAPTURE_DIR = Path("captures_raw")  # ignorado por git: los registros llevan datos personales
 TOGGLE_KEY = "<f9>"
@@ -37,11 +52,14 @@ def build_log(device: GooglePlayGamesDevice, out_dir=DEFAULT_CAPTURE_DIR) -> Inp
 
 
 class RecorderApp:
-    def __init__(self) -> None:
+    def __init__(self, obs: ObsOptions | None = None) -> None:
         from pynput import keyboard, mouse  # import tardío: el extra es opcional
 
         self._log = build_log(GooglePlayGamesDevice())
+        self._obs_options = obs
+        self._obs_session = None
         self._commands: queue.Queue[str] = queue.Queue()
+        self._notices: queue.Queue[str] = queue.Queue()  # avisos de OBS, llegan desde otros hilos
         self._root = tk.Tk()
         self._root.title("Registro de entradas")
         self._root.attributes("-topmost", True)
@@ -56,6 +74,8 @@ class RecorderApp:
         self._button = tk.Button(self._root, text=f"Empezar ({TOGGLE_KEY.strip('<>').upper()})", command=lambda: self._commands.put("toggle"))
         self._button.pack(pady=4)
         tk.Label(self._root, text=f"{MARK_KEY.strip('<>').upper()}: poner marca", fg="gray").pack(pady=(0, 6))
+        self._obs_label = tk.Label(self._root, text="OBS: no usado", fg="gray", wraplength=260, justify="left")
+        self._obs_label.pack(padx=8, pady=(0, 8))
         self._hotkeys = keyboard.GlobalHotKeys(
             {TOGGLE_KEY: lambda: self._commands.put("toggle"), MARK_KEY: lambda: self._commands.put("mark")}
         )
@@ -94,9 +114,27 @@ class RecorderApp:
                 self._toggle()
             else:
                 self._log.mark()
+        while True:
+            try:
+                self._obs_label.config(text=f"OBS: {self._notices.get_nowait()}", fg="#c62828")
+            except queue.Empty:
+                break
         self._root.after(50, self._poll)
 
+    def _connect_obs(self) -> None:
+        """Conecta con OBS al arrancar la aplicación (no al pulsar F9): así el orden de arranque da igual."""
+        opts = self._obs_options
+        try:
+            self._obs_session = open_session(self._log, self._notices.put, opts.host, opts.port, opts.password)
+        except ObsError as exc:
+            self._notices.put(str(exc))  # sin OBS el registro sigue funcionando, solo sin tiempo de vídeo
+            return
+        self._obs_label.config(text="OBS: conectado", fg="#2e7d32")
+        listen_in_thread(self._obs_session)
+
     def _close(self) -> None:
+        if self._obs_session is not None:
+            self._obs_session.close()
         self._log.stop()
         self._hotkeys.stop()
         self._mouse.stop()
@@ -105,12 +143,26 @@ class RecorderApp:
     def run(self) -> None:
         self._hotkeys.start()
         self._mouse.start()
+        if self._obs_options is not None:
+            self._connect_obs()
         self._poll()
         self._root.mainloop()
 
 
+def parse_args(argv: list[str] | None = None) -> ObsOptions | None:
+    parser = argparse.ArgumentParser(description="Registro de entradas del jugador")
+    parser.add_argument("--obs", action="store_true", help="conectar con OBS para anotar el tiempo de vídeo")
+    parser.add_argument("--obs-host", default=DEFAULT_HOST)
+    parser.add_argument("--obs-port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--obs-password", default=None, help=f"o la variable de entorno {PASSWORD_ENV}")
+    args = parser.parse_args(argv)
+    if not args.obs:
+        return None
+    return ObsOptions(args.obs_host, args.obs_port, args.obs_password or os.environ.get(PASSWORD_ENV))
+
+
 def main() -> None:
-    RecorderApp().run()
+    RecorderApp(parse_args()).run()
 
 
 if __name__ == "__main__":

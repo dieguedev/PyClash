@@ -1,8 +1,9 @@
 """Registro de entradas del jugador (issue #43): anota pulsaciones y gestos sobre la ventana del juego.
 
 Lógica pura: no sabe nada de Windows ni de OBS. Recibe eventos de ratón ya capturados, el estado de la
-ventana, un reloj y un destino de líneas, todo inyectado. El pegamento con el sistema real vive en
-`device/input_capture.py`.
+ventana, un reloj y un destino de líneas, todo inyectado. De OBS solo recibe avisos ya interpretados
+(`obs_event`, `set_video_offset`, ver `obs_link.py`). El pegamento con el sistema real vive en
+`interface/input_recorder.py`.
 
 Formato: JSON Lines, un evento por línea, escrito y volcado en cuanto ocurre. Las posiciones van
 normalizadas (0-1) respecto al área cliente de la ventana.
@@ -80,10 +81,26 @@ class InputLog:
         self._held: set[str] = set()  # botones con una pulsación anotada aún sin su suelta
         self._reference_done = False
         self._last_move = float("-inf")
+        # Distancia entre el reloj local y el vídeo de OBS. Vive aunque el registro esté parado: OBS puede
+        # empezar a grabar antes de que se pulse la tecla de empezar.
+        self._video_offset: float | None = None
 
     @property
     def recording(self) -> bool:
         return self._sink is not None
+
+    # --- OBS (issue #44) ------------------------------------------------------
+
+    def set_video_offset(self, offset: float | None) -> None:
+        """Fija la distancia reloj local - vídeo, o None si ya no se conoce (parar, pausar, reanudar)."""
+        with self._lock:
+            self._video_offset = offset
+
+    def obs_event(self, kind: str) -> None:
+        """Anota el aviso de inicio (`start`) o fin (`stop`) de grabación de OBS."""
+        with self._lock:
+            if self._sink is not None:
+                self._emit(f"obs_{kind}")
 
     # --- control --------------------------------------------------------------
 
@@ -201,10 +218,13 @@ class InputLog:
             self._emit("window_size", w=size[0], h=size[1])
 
     def _emit(self, event: str, **fields) -> None:
+        now = self._clock.now()
         record = {
             "event": event,
-            "t": round(self._clock.now() - self._t0, 4),
+            "t": round(now - self._t0, 4),
             "wall": self._wall().isoformat(timespec="milliseconds"),
-            **fields,
         }
+        if self._video_offset is not None:
+            record["video"] = round(now - self._video_offset, 4)
+        record.update(fields)
         self._sink.write_line(json.dumps(record, ensure_ascii=False))

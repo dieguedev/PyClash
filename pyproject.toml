@@ -12,7 +12,7 @@ dependencies = ["Pillow", "numpy", "opencv-python-headless", "rapidfuzz"]
 [project.optional-dependencies]
 dev = ["pytest", "pytest-xdist"]
 ui = ["PySide6"]
-record = ["pynput"]
+record = ["pynput", "websocket-client"]
 ocr =["easyocr"]
 secrets = ["keyring"]  # almacén de credenciales del sistema; sin él las claves van a un fichero restringido
 
