@@ -24,3 +24,9 @@ renderizar texto y dígitos y buscarlos por plantilla; sus derechos pertenecen a
 `src/pyclash/assets/troops/*.png` son recortes pequeños de la cara (zona de los ojos) de las cartas de tropa de
 Clash of Clans. Se incluyen para reconocer qué tropa es cada carta de la barra de despliegue; sus derechos
 pertenecen a sus titulares (Supercell). Se recortaron de capturas propias.
+
+## Iconos de recurso
+
+`src/pyclash/assets/resources/*.png` son recortes de los iconos de oro, elixir, elixir oscuro y gemas de Clash of Clans.
+Se incluyen para localizar el coste de cada fila del panel «Buildings & Heroes»; sus derechos pertenecen a sus
+titulares (Supercell). Se recortaron de una captura propia.

@@ -214,7 +214,7 @@ def test_panel_that_never_changes_stops_without_reaching_the_step_limit():
 
 def test_pages_are_merged_and_each_row_is_delivered_once():
     """E1R2: más filas que pantalla. Tras desplazar, cada fila sale una sola vez."""
-    ctx = make_ctx(frames("upgrade_panel", "upgrade_panel_filtered"), [Transition(0, "swipe", 1)])
+    ctx = make_ctx(frames("upgrade_panel", "upgrade_panel_filtered"), [Transition(0, "scroll", 1)])
     scan = scanner().scan(ctx, max_steps=10)
     keys = [(r.name, r.quantity) for r in scan.rows]
     assert len(keys) == len(set(keys)) == 8 + 9 - 3  # Laboratory, Clan Castle y Army Camp están en las dos
@@ -225,7 +225,7 @@ def test_pages_are_merged_and_each_row_is_delivered_once():
 def test_step_limit_ends_the_scan_without_claiming_the_end():
     ctx = make_ctx(
         frames("upgrade_panel", "upgrade_panel_filtered"),
-        [Transition(0, "swipe", 1), Transition(1, "swipe", 0)],
+        [Transition(0, "scroll", 1), Transition(1, "scroll", 0)],
     )
     scan = scanner().scan(ctx, max_steps=3)
     assert not scan.reached_end and scan.steps == 3
@@ -236,15 +236,23 @@ def test_scroll_direction_follows_where_the_scan_starts():
     scanner().scan(down, from_top=True)
     up = make_ctx(frames("upgrade_panel"))
     scanner().scan(up, from_top=False)
-    (y1, y2) = down.device.actions[0].args[1::2][:2]
-    assert y1 > y2  # desde arriba: el contenido sube
-    (y1, y2) = up.device.actions[0].args[1::2][:2]
-    assert y1 < y2
+    assert down.device.actions[0].kind == "scroll" and down.device.actions[0].args[2] < 0  # desde arriba: rueda hacia abajo
+    assert up.device.actions[0].args[2] > 0
+
+
+def test_wheel_goes_over_the_cards_and_never_drags():
+    ctx = make_ctx(frames("upgrade_panel"))
+    scanner().scan(ctx)
+    action = ctx.device.actions[0]
+    h, w = image_of("upgrade_panel").shape[:2]
+    x0, y0, x1, y1 = PanelLayout().viewport(h, w)
+    assert x0 <= action.args[0] <= x1 and y0 <= action.args[1] <= y1
+    assert all(a.kind == "scroll" for a in ctx.device.actions)
 
 
 def test_scan_from_the_bottom_delivers_rows_in_panel_order():
     """Desde abajo, lo que aparece al subir va encima, sin invertir el orden dentro de cada página."""
-    ctx = make_ctx(frames("upgrade_panel_filtered", "upgrade_panel"), [Transition(0, "swipe", 1)])
+    ctx = make_ctx(frames("upgrade_panel_filtered", "upgrade_panel"), [Transition(0, "scroll", 1)])
     scan = scanner().scan(ctx, from_top=False)
     assert [(r.name, r.quantity) for r in scan.rows] == [
         ("Elixir Collector", 1), ("Builder's Hut", 1), ("Gold Mine", 1), ("Bomb", 2), ("Wall", 24),
@@ -404,7 +412,7 @@ def test_reveal_scrolls_back_to_a_row_that_the_scan_left_out_of_sight():
     y devolver su posición ACTUAL, no la vieja de la captura donde se leyó."""
     ctx = make_ctx(
         frames("upgrade_panel", "upgrade_panel_filtered"),
-        [Transition(1, "swipe", 0)],
+        [Transition(1, "scroll", 0)],
     )
     ctx.device._index = 1
     reader = PanelReader()
@@ -414,7 +422,7 @@ def test_reveal_scrolls_back_to_a_row_that_the_scan_left_out_of_sight():
     got = scanner().reveal(ctx, wanted)
     assert got is not None and (got.name, got.quantity) == (wanted.name, wanted.quantity)
     assert got.center == wanted.center  # se ve en la pantalla donde se vio
-    assert any(a.kind == "swipe" for a in ctx.device.actions)
+    assert any(a.kind == "scroll" for a in ctx.device.actions)
 
 
 def test_reveal_gives_up_when_the_row_is_nowhere_in_the_panel():

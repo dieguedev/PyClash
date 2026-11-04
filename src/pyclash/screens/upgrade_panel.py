@@ -10,15 +10,19 @@ está en el vocabulario. Todo campo ilegible es `None`, nunca una suposición.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
+from importlib import resources
 from typing import Callable, Literal, Sequence
 
 import cv2
 import numpy as np
+from PIL import Image
 
 from ..device.base import Frame, Rect
 from ..runtime.context import Context
-from ..vision.color import INSUFFICIENT_RED, RGB, color_fraction
+from ..vision.color import INSUFFICIENT_RED, RGB, color_fraction, isolate_color
 from ..vision.numeric import parse_duration
 from ..vision.ocr import OcrEngine
 from ..vision.result import Match, crop
@@ -78,10 +82,34 @@ class _Anchor:
     free: bool = False
 
 
-def _best_text(finder: TextFinder, image: np.ndarray, text: str, size: int, color: RGB, region: Rect) -> Match | None:
+Prepared = tuple[np.ndarray, Rect]  # (recorte con solo el color buscado, su rectángulo en la captura)
+
+
+def prepare_region(image: np.ndarray, region: Rect, color: RGB) -> Prepared:
+    """Aísla `color` en `region` una sola vez. Buscar muchos textos en la misma región recalculaba esto por cada uno
+    (3000 veces por captura del panel): es la mayor parte de lo que tarda en leerse."""
+    section, eff = crop(image, region)
+    return (isolate_color(section, color, 30.0) if section.size else section), eff  # 30: la tolerancia de `TemplateMatcher.best`
+
+
+def _best_in(
+    finder: TextFinder, image: np.ndarray, template: np.ndarray, region: Rect, color: RGB, prepared: Prepared | None
+) -> Match | None:
+    if prepared is None:
+        return finder.matcher.best(image, template, region, prefilter_color=color)
+    section, eff = prepared
+    m = finder.matcher.best(section, template)
+    if m is None:
+        return None
+    return replace(m, rect=Rect(eff.x + m.rect.x, eff.y + m.rect.y, m.rect.w, m.rect.h))
+
+
+def _best_text(
+    finder: TextFinder, image: np.ndarray, text: str, size: int, color: RGB, region: Rect, prepared: Prepared | None = None
+) -> Match | None:
     best: Match | None = None
     for s in {max(1, size - 1), size, size + 1}:  # el redondeo del tamaño cambia con la ventana
-        m = finder.matcher.best(image, render_text(text, s, color), region, prefilter_color=color)
+        m = _best_in(finder, image, render_text(text, s, color), region, color, prepared)
         if m is not None and (best is None or m.confidence > best.confidence):
             best = m
     return best
@@ -120,11 +148,64 @@ def find_cost_icons(image: np.ndarray, layout: PanelLayout = VILLAGE_PANEL) -> l
         pixels = hsv[y:y + bh, x:x + bw][labels[y:y + bh, x:x + bw] == i]
         resource = classify_icon(float(np.median(pixels[:, 0])), float(pixels[:, 2].mean()))
         anchors.append(_Anchor(y0 + y + bh // 2, resource, ix0 + x))
+    # El color no basta: la gota de elixir oscuro es casi negra y no pasa el filtro de saturación. Los recortes
+    # reales de los cuatro iconos mandan; el color solo aporta lo que ellos no encuentran (p. ej. otra escala).
+    by_template = _template_icons(image, layout)
+    anchors = by_template + [a for a in anchors if all(abs(a.y - t.y) >= 0.03 * h for t in by_template)]
     return sorted(anchors, key=lambda a: a.y)
 
 
+ICON_REF_HEIGHT = 993  # alto de la captura de la que se recortaron los iconos de coste
+ICON_THRESHOLD = 0.8
+_COST_ICONS = ("gold", "elixir", "dark_elixir", "gems")
+
+
+@lru_cache(maxsize=None)
+def _icon_templates() -> dict[str, np.ndarray]:
+    out = {}
+    for name in _COST_ICONS:
+        with (resources.files("pyclash") / "assets" / "resources" / f"{name}.png").open("rb") as handle, Image.open(handle) as im:
+            out[name] = np.array(im.convert("RGB"))
+    return out
+
+
+def _template_icons(image: np.ndarray, layout: PanelLayout) -> list[_Anchor]:
+    h, w = image.shape[:2]
+    _, y0, _, y1 = layout.viewport(h, w)
+    ix0 = max(0, int(w * layout.icon_x[0]) - int(0.02 * w))  # margen: el recorte lleva borde y fondo
+    strip = image[y0:y1, ix0:]
+    found: list[_Anchor] = []
+    for name, tpl in _icon_templates().items():
+        scale = h / ICON_REF_HEIGHT
+        size = max(4, round(tpl.shape[0] * scale))
+        scaled = cv2.resize(tpl, (size, size), interpolation=cv2.INTER_AREA)
+        if strip.shape[0] < size or strip.shape[1] < size:
+            continue
+        scores = cv2.matchTemplate(strip, scaled, cv2.TM_CCOEFF_NORMED)
+        while True:
+            _, best, _, loc = cv2.minMaxLoc(scores)
+            if best < ICON_THRESHOLD:
+                break
+            found.append(_Anchor(y0 + loc[1] + size // 2, name, ix0 + loc[0] + round(size * 3 / 28), free=False))  # el icono empieza ~3 px dentro del recorte
+            ya, yb = max(0, loc[1] - size), loc[1] + size
+            scores[ya:yb, :] = -1.0  # una fila no tiene dos iconos de coste
+    found.sort(key=lambda a: a.y)
+    out: list[_Anchor] = []
+    for a in found:  # dos recortes que casan en la misma fila: gana el primero por confianza de orden de hallazgo
+        if all(abs(a.y - o.y) >= 0.03 * h for o in out):
+            out.append(a)
+    return out
+
+
 def fine_match(
-    finder: TextFinder, image: np.ndarray, text: str, rgb: RGB, region: Rect, size: int, slack: float | None = None
+    finder: TextFinder,
+    image: np.ndarray,
+    text: str,
+    rgb: RGB,
+    region: Rect,
+    size: int,
+    slack: float | None = None,
+    prepared: Prepared | None = None,
 ) -> tuple[float, Rect, float] | None:
     """Mejor coincidencia de `text` barriendo la escala en pasos de 0.25 px alrededor de `size`.
 
@@ -138,7 +219,7 @@ def fine_match(
     for s in np.arange(size - 2.0, size + 2.01, 0.25):
         f = s / _BIG_PX
         template = cv2.resize(big, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
-        m = finder.matcher.best(image, template, region, prefilter_color=rgb)
+        m = _best_in(finder, image, template, region, rgb, prepared)
         if m is None or (slack is not None and m.rect.x - region.x > slack):
             continue
         if best is None or m.confidence > best[0]:
@@ -273,14 +354,15 @@ class PanelReader:
         colors = self._color_order(image, region)
         for color_name in colors:
             rgb = TEXT_COLORS[color_name]
+            prepared = prepare_region(image, region, rgb)  # una vez por color, no una por cada nombre del vocabulario
             coarse = []
             for name in self._names:
-                m = _best_text(self.finder, image, name, size, rgb, region)
+                m = _best_text(self.finder, image, name, size, rgb, region, prepared)
                 if m is not None and m.rect.x - region.x <= slack:
                     coarse.append((m.confidence, name))
             fine: list[tuple[float, str, Rect, float]] = []
             for _, name in sorted(coarse, reverse=True)[: self.shortlist]:
-                best = fine_match(self.finder, image, name, rgb, region, size, slack)
+                best = fine_match(self.finder, image, name, rgb, region, size, slack, prepared)
                 if best is not None:
                     fine.append((best[0], name, best[1], best[2]))
             fine.sort(key=lambda t: t[0], reverse=True)
@@ -397,11 +479,52 @@ def panel_diff(a: np.ndarray, b: np.ndarray, layout: PanelLayout = VILLAGE_PANEL
 
 
 class PanelScanner:
-    """Recorre el panel arrastrando hasta que dos capturas seguidas son iguales (o se agotan los pasos)."""
+    """Recorre el panel con la rueda hasta que dos capturas seguidas son iguales (o se agotan los pasos).
 
-    def __init__(self, reader: PanelReader | None = None, end_threshold: float = 0.01) -> None:
+    La rueda mueve el panel a saltos fijos y sin rebote: en el tope la imagen deja de cambiar y el recorrido
+    termina enseguida (un arrastre rebotaba y daba pasos de más). `notches` son las muescas por paso; deben
+    mover menos que el alto del panel para que las filas se solapen entre capturas (se mide con la
+    comprobación «Medir la rueda en el panel»).
+    """
+
+    def __init__(self, reader: PanelReader | None = None, end_threshold: float = 0.01, notches: int = 3) -> None:
         self.reader = reader or PanelReader()
         self.end_threshold = end_threshold
+        self.notches = notches
+
+    def _wheel(self, ctx: Context, frame: Frame, forward: bool) -> None:
+        """Una tanda de muescas con el cursor sobre las tarjetas. `forward`: ver lo que hay más abajo."""
+        h, w = frame.image.shape[:2]
+        _, top, _, bottom = self.reader.layout.viewport(h, w)
+        x = int(w * (1 + self.reader.layout.left) / 2)
+        ctx.device.scroll(x, (top + bottom) // 2, -self.notches if forward else self.notches)
+
+    def confirm(self, ctx: Context, row: PanelRow, taken: int, capture: Callable[[], Frame] | None = None) -> bool:
+        """¿El panel abierto muestra `row` con `taken` muros menos, o ya sin ella si se mejoraron todos?
+
+        El panel se actualiza en directo: se mira en el sitio, sin cerrarlo. Si la fila sigue a la vista es una sola
+        captura; solo cuando ya no aparece hay que recorrer el panel entero para estar seguros de que no está.
+        """
+        if taken <= 0:
+            return False
+        if taken < row.quantity:
+            return self.reveal(ctx, replace(row, quantity=row.quantity - taken), capture=capture) is not None
+        return self.reveal(ctx, row, capture=capture) is None
+
+    def rewind(
+        self, ctx: Context, settle: float = 0.4, max_steps: int = 30, capture: Callable[[], Frame] | None = None
+    ) -> None:
+        """Vuelve al principio del panel abierto: rueda hacia arriba hasta que deja de moverse."""
+        grab = capture or ctx.device.capture
+        frame = grab()
+        for _ in range(max_steps):
+            ctx.check_stop()
+            self._wheel(ctx, frame, forward=False)
+            ctx.sleep(settle)
+            nxt = grab()
+            if panel_diff(frame.image, nxt.image, self.reader.layout) < self.end_threshold:
+                return
+            frame = nxt
 
     def scan(
         self,
@@ -415,35 +538,36 @@ class PanelScanner:
         lay = self.reader.layout
         grab = capture or ctx.device.capture
         frame = grab()
-        h, w = frame.image.shape[:2]
-        _, top, _, bottom = lay.viewport(h, w)
-        x = int(w * (1 + lay.left) / 2)
-        span = int((bottom - top) * 0.55)  # menos que el panel: las filas se solapan entre capturas
-        start, end = (bottom - int(0.05 * h), bottom - int(0.05 * h) - span) if from_top else (top + int(0.05 * h), top + int(0.05 * h) + span)
         found: dict[tuple, PanelRow] = {}
         order: list[tuple] = []
         section: str | None = None
         reached_end, steps = False, 0
-        while True:
-            ctx.check_stop()
-            reading = self.reader.read(frame.image, section)
-            fresh: list[tuple] = []
-            for row in reading.rows:
-                self._add(found, fresh, row)
-            # Desde arriba, lo nuevo queda debajo; desde abajo, encima. El orden interno de la página se conserva.
-            order = order + fresh if from_top else fresh + order
-            if reading.rows and from_top:
-                section = reading.rows[-1].section or section
-            if steps >= max_steps:
-                break
-            ctx.device.swipe(x, start, x, end)
-            ctx.sleep(settle)
-            nxt = grab()
-            steps += 1
-            if panel_diff(frame.image, nxt.image, lay) < self.end_threshold:
-                reached_end = True
-                break
-            frame = nxt
+        # Leer una captura (~0,6 s) solo necesita la imagen: se hace a la vez que la rueda, la espera y la captura
+        # siguiente, que sí hablan con el juego. El dispositivo solo lo toca este hilo.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            while True:
+                ctx.check_stop()
+                reading_task = pool.submit(self.reader.read, frame.image, section)
+                nxt = None
+                if steps < max_steps:
+                    self._wheel(ctx, frame, forward=from_top)
+                    ctx.sleep(settle)
+                    nxt = grab()
+                    steps += 1
+                reading = reading_task.result()
+                fresh: list[tuple] = []
+                for row in reading.rows:
+                    self._add(found, fresh, row)
+                # Desde arriba, lo nuevo queda debajo; desde abajo, encima. El orden interno de la página se conserva.
+                order = order + fresh if from_top else fresh + order
+                if reading.rows and from_top:
+                    section = reading.rows[-1].section or section
+                if nxt is None:
+                    break
+                if panel_diff(frame.image, nxt.image, lay) < self.end_threshold:
+                    reached_end = True
+                    break
+                frame = nxt
         rows = tuple(found[k] for k in order)
         ok, reason = (None, "") if expect_order is None else verify_order(rows, expect_order)
         return PanelScan(rows, steps, reached_end, ok, reason)
@@ -468,16 +592,10 @@ class PanelScanner:
         hit = self._find(frame.image, target)
         if hit is not None:
             return hit
-        h, w = frame.image.shape[:2]
-        _, top, _, bottom = lay.viewport(h, w)
-        x = int(w * (1 + lay.left) / 2)
-        span = int((bottom - top) * 0.55)
-        up = (top + int(0.05 * h), top + int(0.05 * h) + span)  # el dedo baja: se ve lo anterior
-        down = (bottom - int(0.05 * h), bottom - int(0.05 * h) - span)
-        for start, end in (up, down):
+        for forward in (False, True):  # primero hasta arriba (se ve lo anterior), luego hacia abajo
             for _ in range(max_steps):
                 ctx.check_stop()
-                ctx.device.swipe(x, start, x, end)
+                self._wheel(ctx, frame, forward)
                 ctx.sleep(settle)
                 nxt = grab()
                 if panel_diff(frame.image, nxt.image, lay) < self.end_threshold:
