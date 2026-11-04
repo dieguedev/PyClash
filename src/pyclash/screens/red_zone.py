@@ -86,7 +86,9 @@ def _analyse(response: np.ndarray, h: int) -> RedZoneReading:
 
     join = max(3, round(JOIN_FRACTION * h)) | 1
     count, labels, _, _ = cv2.connectedComponentsWithStats(cv2.dilate(mask, np.ones((join, join), np.uint8)), connectivity=8)
-    sizes = sorted(((int(((labels == i) & (mask > 0)).sum()), i) for i in range(1, count)), reverse=True)
+    # Píxeles rojos de cada componente, en una sola pasada (antes: una máscara completa por componente).
+    pixels_per_label = np.bincount(labels[mask > 0], minlength=count)
+    sizes = sorted(((int(pixels_per_label[i]), i) for i in range(1, count)), reverse=True)
     if not sizes:
         return RedZoneReading(None, "no se ve ninguna línea roja")
     main, index = sizes[0]
