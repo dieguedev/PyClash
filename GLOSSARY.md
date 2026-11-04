@@ -48,6 +48,24 @@ _Avoid_: Umbral, colchón
 Constructor que se deja libre para que los muros avancen mientras el resto de la aldea se mejora.
 _Avoid_: Constructor de muros
 
+### Muros
+
+**Fila de muros**:
+Todos los muros de un mismo nivel, agrupados en una línea del panel de mejoras. Al mejorarlos pasan a la fila del nivel siguiente.
+_Avoid_: Tipo de muro, Wall row
+
+**Lote de muros**:
+Muros de una misma fila que se mejoran de una vez, tantos como permita el saldo. Una fila con un solo muro no tiene lote: es un muro suelto.
+_Avoid_: Batch, selección
+
+**Pasada**:
+Recorrido de las filas de muros, de la más cara a la más barata, gastando el saldo que va quedando. Dentro de una pasada no se comprueba nada.
+_Avoid_: Tanda, ronda, sesión
+
+**Revisión**:
+Relectura entera del panel de mejoras tras una o varias pasadas, para comprobar lo mejorado y ver los muros nuevos que no estaban a la vista. Solo se hace cuando en pantalla no queda nada más por mejorar.
+_Avoid_: Verificación, reescaneo
+
 ### Pulsaciones
 
 **Reacción humana**:
