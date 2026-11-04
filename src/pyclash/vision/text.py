@@ -28,7 +28,9 @@ def game_font_path() -> str:
 
 @lru_cache(maxsize=64)
 def _font(size: int) -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(game_font_path(), size)
+    # Motor de texto BÁSICO fijo: con raqm (si Pillow lo encuentra en el entorno) el espaciado cambia y las plantillas
+    # salen con 1-2 píxeles de diferencia, lo que mueve las confianzas medidas (p. ej. 0,73 → 0,65). Todo se calibró sin raqm.
+    return ImageFont.truetype(game_font_path(), size, layout_engine=ImageFont.Layout.BASIC)
 
 
 @lru_cache(maxsize=2048)
